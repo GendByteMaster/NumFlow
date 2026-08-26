@@ -64,11 +64,7 @@ mod tests {
 
     #[test]
     fn second_guard_with_same_name_is_rejected_until_first_is_dropped() {
-        let name = format!(
-            "Local\\NumFlow.Test.{}.{}",
-            std::process::id(),
-            line!()
-        );
+        let name = format!("Local\\NumFlow.Test.{}.{}", std::process::id(), line!());
         let first = SingleInstanceGuard::acquire_named(&name).expect("first guard should acquire");
 
         assert!(matches!(
