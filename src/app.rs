@@ -1,8 +1,11 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use num_traits::ToPrimitive;
-use numflow_core::{Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton};
-use slint::ComponentHandle;
+use numflow_core::{
+    Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton, PointerEffect,
+    StateChange,
+};
+use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::{
     AppTray, AppWindow, MouseButtonMode,
@@ -13,14 +16,17 @@ use crate::{
     config::{AppConfig, ConfigError, ConfigLoadStatus, ConfigStore, NumpadKeyConfig},
     error::AppError,
     hud::{HudController, HudEvent},
+    runtime::{BackgroundRuntime, RuntimeConfig, RuntimeEvent},
 };
 
 const DEFAULT_POINTER_SPEED: f32 = 180.0;
 const DEFAULT_POINTER_ACCELERATION: f32 = 900.0;
+const RUNTIME_EVENT_POLL: Duration = Duration::from_millis(16);
 
 type SharedUiSettings = Rc<RefCell<UiSettings>>;
 type SharedHud = Rc<RefCell<HudController>>;
 type SharedConfigStore = Rc<ConfigStore>;
+type SharedRuntime = Rc<RefCell<BackgroundRuntime>>;
 
 #[derive(Debug)]
 struct UiSettings {
@@ -218,6 +224,15 @@ impl UiSettings {
         self.config.clone()
     }
 
+    fn runtime_config(&self) -> RuntimeConfig {
+        RuntimeConfig::new(
+            self.motion,
+            self.bindings.clone(),
+            self.controller.selected_button(),
+            self.controller.is_precision_enabled(),
+        )
+    }
+
     fn reset_defaults(&mut self) -> Vec<CoreEffect> {
         self.config = AppConfig::default();
         let profile = self.config.active_profile().clone();
@@ -299,6 +314,33 @@ fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     }
 }
 
+fn runtime_apply(runtime: &SharedRuntime, action: InputAction) {
+    if let Err(error) = runtime.borrow().apply(action) {
+        tracing::error!(%error, ?action, "failed to send action to NumFlow background runtime");
+    }
+}
+
+fn runtime_configure(runtime: &SharedRuntime, settings: &SharedUiSettings) {
+    let config = settings.borrow().runtime_config();
+    if let Err(error) = runtime.borrow().configure(config) {
+        tracing::error!(%error, "failed to configure NumFlow background runtime");
+    }
+}
+
+fn runtime_set_motion(runtime: &SharedRuntime, settings: &SharedUiSettings) {
+    let motion = settings.borrow().motion;
+    if let Err(error) = runtime.borrow().set_motion_config(motion) {
+        tracing::error!(%error, "failed to update background pointer motion config");
+    }
+}
+
+fn runtime_set_bindings(runtime: &SharedRuntime, settings: &SharedUiSettings) {
+    let bindings = settings.borrow().bindings.clone();
+    if let Err(error) = runtime.borrow().set_bindings(bindings) {
+        tracing::error!(%error, "failed to update background NumPad bindings");
+    }
+}
+
 #[cfg(windows)]
 fn set_windows_startup(enabled: bool) -> bool {
     match numflow_windows::StartupRegistration::set_enabled(enabled) {
@@ -321,13 +363,16 @@ fn connect_pointer_controls(
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
+    runtime: &SharedRuntime,
 ) {
     {
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
+        let runtime = Rc::clone(runtime);
         let weak_tray = tray.as_weak();
         window.on_enabled_toggled(move |enabled| {
             let effects = settings.borrow_mut().set_enabled(enabled);
+            runtime_apply(&runtime, InputAction::SetEnabled(enabled));
             hud.borrow_mut().observe_effects(&effects);
             if let Some(tray) = weak_tray.upgrade() {
                 tray.set_numflow_enabled(enabled);
@@ -339,10 +384,11 @@ fn connect_pointer_controls(
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         window.on_mouse_button_changed(move |button| {
-            let effects = settings
-                .borrow_mut()
-                .set_mouse_button(map_mouse_button(button));
+            let button = map_mouse_button(button);
+            let effects = settings.borrow_mut().set_mouse_button(button);
+            runtime_apply(&runtime, InputAction::SelectButton(button));
             hud.borrow_mut().observe_effects(&effects);
             persist_configuration(&settings, &store);
         });
@@ -352,8 +398,10 @@ fn connect_pointer_controls(
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         window.on_precision_toggled(move |enabled| {
             let effects = settings.borrow_mut().set_precision(enabled);
+            runtime_apply(&runtime, InputAction::SetPrecision(enabled));
             hud.borrow_mut().observe_effects(&effects);
             persist_configuration(&settings, &store);
         });
@@ -362,8 +410,10 @@ fn connect_pointer_controls(
     {
         let settings = Rc::clone(settings);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         window.on_speed_changed(move |speed| {
             settings.borrow_mut().set_pointer_speed(speed);
+            runtime_set_motion(&runtime, &settings);
             persist_configuration(&settings, &store);
         });
     }
@@ -371,8 +421,10 @@ fn connect_pointer_controls(
     {
         let settings = Rc::clone(settings);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         window.on_acceleration_changed(move |acceleration| {
             settings.borrow_mut().set_pointer_acceleration(acceleration);
+            runtime_set_motion(&runtime, &settings);
             persist_configuration(&settings, &store);
         });
     }
@@ -382,6 +434,7 @@ fn connect_binding_controls(
     window: &AppWindow,
     settings: &SharedUiSettings,
     store: &SharedConfigStore,
+    runtime: &SharedRuntime,
 ) {
     {
         let settings = Rc::clone(settings);
@@ -399,11 +452,13 @@ fn connect_binding_controls(
     {
         let settings = Rc::clone(settings);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         let weak_window = window.as_weak();
         window.on_binding_action_changed(move |index| {
             if !settings.borrow_mut().set_binding_choice_index(index) {
                 return;
             }
+            runtime_set_bindings(&runtime, &settings);
             if let Some(window) = weak_window.upgrade() {
                 sync_binding_view(&window, &settings.borrow());
             }
@@ -414,11 +469,13 @@ fn connect_binding_controls(
     {
         let settings = Rc::clone(settings);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         let weak_window = window.as_weak();
         window.on_reset_bindings(move || {
             if !settings.borrow_mut().reset_active_bindings() {
                 return;
             }
+            runtime_set_bindings(&runtime, &settings);
             if let Some(window) = weak_window.upgrade() {
                 sync_binding_view(&window, &settings.borrow());
             }
@@ -433,6 +490,7 @@ fn connect_preferences(
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
+    runtime: &SharedRuntime,
 ) {
     {
         let settings = Rc::clone(settings);
@@ -460,6 +518,7 @@ fn connect_preferences(
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         let weak_window = window.as_weak();
         window.on_profile_changed(move |profile| {
             let effects = match settings.borrow_mut().set_profile(profile.as_str()) {
@@ -470,6 +529,7 @@ fn connect_preferences(
                 }
             };
 
+            runtime_configure(&runtime, &settings);
             hud.borrow_mut().observe_effects(&effects);
             if let Some(window) = weak_window.upgrade() {
                 sync_window_from_settings(&window, &settings.borrow());
@@ -482,6 +542,7 @@ fn connect_preferences(
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
         let weak_window = window.as_weak();
         let weak_tray = tray.as_weak();
         window.on_reset_defaults(move || {
@@ -494,6 +555,7 @@ fn connect_preferences(
             if !set_windows_startup(false) {
                 settings.borrow_mut().set_start_with_windows(true);
             }
+            runtime_configure(&runtime, &settings);
 
             {
                 let mut hud = hud.borrow_mut();
@@ -520,6 +582,7 @@ fn connect_tray(
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
+    runtime: &SharedRuntime,
 ) {
     {
         let weak_window = window.as_weak();
@@ -535,10 +598,12 @@ fn connect_tray(
     {
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
+        let runtime = Rc::clone(runtime);
         let weak_window = window.as_weak();
         let weak_tray = tray.as_weak();
         tray.on_enabled_toggled(move |enabled| {
             let effects = settings.borrow_mut().set_enabled(enabled);
+            runtime_apply(&runtime, InputAction::SetEnabled(enabled));
             hud.borrow_mut().observe_effects(&effects);
             if let Some(window) = weak_window.upgrade() {
                 window.set_numflow_enabled(enabled);
@@ -586,7 +651,11 @@ fn connect_tray(
     {
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
+        let runtime = Rc::clone(runtime);
         tray.on_exit_requested(move || {
+            if let Err(error) = runtime.borrow_mut().shutdown() {
+                tracing::error!(%error, "background runtime failed during shutdown");
+            }
             let effects = settings.borrow_mut().shutdown();
             hud.borrow_mut().observe_effects(&effects);
             tracing::info!("exit requested from NumFlow system tray");
@@ -597,17 +666,103 @@ fn connect_tray(
     }
 }
 
+fn apply_runtime_effects(settings: &mut UiSettings, effects: &[CoreEffect]) -> bool {
+    let mut config_changed = false;
+
+    for effect in effects {
+        match effect {
+            CoreEffect::State(StateChange::Enabled(enabled)) => {
+                let _ = settings.set_enabled(*enabled);
+            }
+            CoreEffect::State(StateChange::Precision(enabled)) => {
+                let _ = settings.set_precision(*enabled);
+                config_changed = true;
+            }
+            CoreEffect::State(StateChange::SelectedButton(button)) => {
+                let _ = settings.set_mouse_button(*button);
+                config_changed = true;
+            }
+            CoreEffect::Pointer(PointerEffect::ButtonDown(_)) => {
+                let _ = settings.controller.apply(InputAction::Hold);
+            }
+            CoreEffect::Pointer(PointerEffect::ButtonUp(_)) => {
+                let _ = settings.controller.apply(InputAction::Release);
+            }
+            CoreEffect::Pointer(PointerEffect::Move(_) | PointerEffect::Click { .. }) => {}
+        }
+    }
+
+    config_changed
+}
+
+fn start_runtime_event_bridge(
+    window: &AppWindow,
+    tray: &AppTray,
+    settings: &SharedUiSettings,
+    hud: &SharedHud,
+    store: &SharedConfigStore,
+    runtime: &SharedRuntime,
+) -> Timer {
+    let timer = Timer::default();
+    let weak_window = window.as_weak();
+    let weak_tray = tray.as_weak();
+    let settings = Rc::clone(settings);
+    let hud = Rc::clone(hud);
+    let store = Rc::clone(store);
+    let runtime = Rc::clone(runtime);
+
+    timer.start(TimerMode::Repeated, RUNTIME_EVENT_POLL, move || {
+        let events = runtime.borrow().drain_events();
+        if events.is_empty() {
+            return;
+        }
+
+        let mut state_changed = false;
+        let mut config_changed = false;
+        for event in events {
+            match event {
+                RuntimeEvent::Effects(effects) => {
+                    config_changed |= apply_runtime_effects(&mut settings.borrow_mut(), &effects);
+                    hud.borrow_mut().observe_effects(&effects);
+                    state_changed = true;
+                }
+                RuntimeEvent::Fault(reason) => {
+                    tracing::error!(%reason, "NumFlow background pointer runtime entered safe disabled state");
+                    let effects = settings.borrow_mut().set_enabled(false);
+                    hud.borrow_mut().observe_effects(&effects);
+                    state_changed = true;
+                }
+            }
+        }
+
+        if state_changed {
+            if let Some(window) = weak_window.upgrade() {
+                sync_window_from_settings(&window, &settings.borrow());
+            }
+            if let Some(tray) = weak_tray.upgrade() {
+                sync_tray_from_settings(&tray, &settings.borrow());
+            }
+        }
+        if config_changed {
+            persist_configuration(&settings, &store);
+        }
+    });
+
+    timer
+}
+
 fn connect_ui(
     window: &AppWindow,
     tray: &AppTray,
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
+    runtime: &SharedRuntime,
 ) {
-    connect_pointer_controls(window, tray, settings, hud, store);
-    connect_binding_controls(window, settings, store);
-    connect_preferences(window, tray, settings, hud, store);
-    connect_tray(window, tray, settings, hud, store);
+    connect_pointer_controls(window, tray, settings, hud, store, runtime);
+    connect_binding_controls(window, settings, store, runtime);
+    connect_preferences(window, tray, settings, hud, store, runtime);
+    connect_tray(window, tray, settings, hud, store, runtime);
 }
 
 pub fn run(tray: &AppTray) -> Result<(), AppError> {
@@ -640,6 +795,11 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         tracing::warn!("configured Windows startup preference could not be applied");
     }
 
+    let runtime = Rc::new(RefCell::new(
+        BackgroundRuntime::start(settings.borrow().runtime_config())
+            .map_err(|error| AppError::Runtime(error.to_string()))?,
+    ));
+
     let hud = Rc::new(RefCell::new(
         HudController::new().map_err(|error| AppError::Ui(error.to_string()))?,
     ));
@@ -652,10 +812,12 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         start_minimized = settings.borrow().start_minimized(),
         start_with_windows = settings.borrow().start_with_windows(),
         path = %store.path().display(),
-        "configuration ready"
+        "configuration and background runtime ready"
     );
 
-    connect_ui(&window, tray, &settings, &hud, &store);
+    connect_ui(&window, tray, &settings, &hud, &store, &runtime);
+    let _runtime_event_timer =
+        start_runtime_event_bridge(&window, tray, &settings, &hud, &store, &runtime);
 
     if settings.borrow().start_minimized() {
         tracing::info!("starting NumFlow with settings window hidden");
@@ -665,7 +827,11 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
             .map_err(|error| AppError::Ui(error.to_string()))?;
     }
 
-    slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()))
+    let event_loop_result = slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));
+    if let Err(error) = runtime.borrow_mut().shutdown() {
+        tracing::error!(%error, "background runtime failed during final shutdown");
+    }
+    event_loop_result
 }
 
 #[cfg(test)]
@@ -724,6 +890,21 @@ mod tests {
         assert!(settings.start_with_windows());
         assert!(settings.config.start_minimized);
         assert!(settings.config.start_with_windows);
+    }
+
+    #[test]
+    fn runtime_config_matches_active_ui_state() {
+        let mut settings = UiSettings::default();
+        settings.set_mouse_button(MouseButton::Right);
+        settings.set_precision(true);
+        settings.set_pointer_speed(420.0);
+
+        let runtime = settings.runtime_config();
+
+        assert_eq!(runtime.selected_button, MouseButton::Right);
+        assert!(runtime.precision);
+        assert!((runtime.motion.base_speed - 420.0).abs() <= f64::EPSILON);
+        assert_eq!(runtime.bindings.iter().count(), settings.binding_count());
     }
 
     #[test]
