@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">NumFlow icon</title>
+  <desc id="desc">A blue rounded frame containing a 3 by 3 keypad, a central pointer key, directional arrows and flowing motion lines.</desc>
+  <defs>
+    <linearGradient id="frame" x1="180" y1="120" x2="820" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#68E4FF"/>
+      <stop offset="0.45" stop-color="#1CB8FF"/>
+      <stop offset="1" stop-color="#1565F5"/>
+    </linearGradient>
+    <linearGradient id="center" x1="430" y1="405" x2="610" y2="625" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22E5FF"/>
+      <stop offset="0.48" stop-color="#08A7FF"/>
+      <stop offset="1" stop-color="#1757F5"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="250" y1="220" x2="760" y2="790" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19E6F2"/>
+      <stop offset="0.5" stop-color="#09BFFF"/>
+      <stop offset="1" stop-color="#1769F5"/>
+    </linearGradient>
+    <linearGradient id="key" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#EAF2FA" stop-opacity="0.94"/>
+    </linearGradient>
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0A5FC8" flood-opacity="0.18"/>
+    </filter>
+    <filter id="blueGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0B8EFF" flood-opacity="0.34"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded application frame -->
+  <rect x="102" y="102" width="820" height="820" rx="190" fill="none" stroke="url(#frame)" stroke-width="48" filter="url(#blueGlow)"/>
+  <rect x="128" y="128" width="768" height="768" rx="168" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="3"/>
+
+  <!-- Keypad -->
+  <g filter="url(#softShadow)" stroke="#C9D9E9" stroke-width="4">
+    <rect x="236" y="235" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="430" y="235" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="624" y="235" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="236" y="430" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="624" y="430" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="236" y="625" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="430" y="625" width="164" height="164" rx="38" fill="url(#key)"/>
+    <rect x="624" y="625" width="164" height="164" rx="38" fill="url(#key)"/>
+  </g>
+
+  <!-- Active center key -->
+  <rect x="430" y="430" width="164" height="164" rx="42" fill="url(#center)" stroke="#39DBFF" stroke-width="5" filter="url(#blueGlow)"/>
+  <path d="M481 470v92.5c0 6.2 7.2 9.8 12.2 6.1l24.1-18 17 36.7c2.1 4.6 7.6 6.4 12 3.9l15.9-9.1c4.3-2.5 5.7-8 3.2-12.2l-20.1-34.4 31.5-2.2c6.4-.5 8.6-8.8 3.2-12.3l-87-56.7c-5-3.2-12 .3-12 5.7Z" fill="#FFFFFF"/>
+
+  <!-- Flow curves -->
+  <g fill="none" stroke="url(#flow)" stroke-width="22" stroke-linecap="round" opacity="0.96">
+    <path d="M254 285C324 302 351 373 414 430"/>
+    <path d="M770 285C700 302 673 373 610 430"/>
+    <path d="M254 739C324 722 351 651 414 594"/>
+    <path d="M770 739C700 722 673 651 610 594"/>
+  </g>
+
+  <!-- Cardinal direction arrows -->
+  <g fill="url(#frame)" filter="url(#blueGlow)">
+    <path d="M512 164 463 222h31v58h36v-58h31Z"/>
+    <path d="m512 860-49-58h31v-58h36v58h31Z"/>
+    <path d="m164 512 58-49v31h58v36h-58v31Z"/>
+    <path d="m860 512-58-49v31h-58v36h58v31Z"/>
+  </g>
+</svg>
