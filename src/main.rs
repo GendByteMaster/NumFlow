@@ -13,6 +13,26 @@ fn init_tracing() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
+#[cfg(windows)]
+fn create_system_tray() -> Result<AppTray, slint::PlatformError> {
+    let tray = AppTray::new()?;
+
+    tray.on_open_settings(|| {
+        if let Err(error) = numflow_windows::show_numflow_window() {
+            tracing::warn!(%error, "failed to restore NumFlow settings window from tray");
+        }
+    });
+
+    tray.on_exit_requested(|| {
+        tracing::info!("exit requested from NumFlow system tray");
+        if let Err(error) = slint::quit_event_loop() {
+            tracing::error!(%error, "failed to request NumFlow event-loop shutdown");
+        }
+    });
+
+    Ok(tray)
+}
+
 fn main() {
     init_tracing();
 
@@ -25,6 +45,18 @@ fn main() {
         }
         Err(error) => {
             tracing::error!(%error, "failed to acquire NumFlow single-instance guard");
+            std::process::exit(1);
+        }
+    };
+
+    #[cfg(windows)]
+    let _tray = match create_system_tray() {
+        Ok(tray) => {
+            tracing::info!("NumFlow system tray ready; closing settings keeps the app running");
+            tray
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to create NumFlow system tray");
             std::process::exit(1);
         }
     };
