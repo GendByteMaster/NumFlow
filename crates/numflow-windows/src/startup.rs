@@ -117,10 +117,7 @@ fn startup_command_bytes(executable: &Path) -> Vec<u8> {
     command.push(u16::from(b'"'));
     command.push(0);
 
-    command
-        .into_iter()
-        .flat_map(u16::to_le_bytes)
-        .collect()
+    command.into_iter().flat_map(u16::to_le_bytes).collect()
 }
 
 #[cfg(test)]
