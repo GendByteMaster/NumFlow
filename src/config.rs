@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -40,7 +39,10 @@ pub enum ConfigError {
     #[error("active profile `{0}` does not exist")]
     MissingActiveProfile(String),
     #[error("profile `{profile}` contains duplicate binding for {key:?}")]
-    DuplicateBinding { profile: String, key: NumpadKeyConfig },
+    DuplicateBinding {
+        profile: String,
+        key: NumpadKeyConfig,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -505,8 +507,7 @@ mod tests {
     use numflow_core::{Direction, InputAction, NumpadKey};
 
     use super::{
-        AppConfig, BindingConfig, ConfigLoadStatus, ConfigStore, InputActionConfig,
-        NumpadKeyConfig,
+        AppConfig, BindingConfig, ConfigLoadStatus, ConfigStore, InputActionConfig, NumpadKeyConfig,
     };
 
     fn test_path(name: &str) -> PathBuf {
@@ -553,17 +554,13 @@ mod tests {
         let path = test_path("corrupt");
         fs::create_dir_all(path.parent().expect("test path has parent"))
             .expect("test directory should exist");
-        fs::write(&path, "this is not = [valid toml")
-            .expect("corrupted config should be written");
+        fs::write(&path, "this is not = [valid toml").expect("corrupted config should be written");
 
         let loaded = ConfigStore::new(path.clone())
             .load_or_default()
             .expect("corruption should recover");
 
-        assert!(matches!(
-            loaded.status,
-            ConfigLoadStatus::Recovered { .. }
-        ));
+        assert!(matches!(loaded.status, ConfigLoadStatus::Recovered { .. }));
         assert_eq!(loaded.config, AppConfig::default());
 
         let _ = fs::remove_dir_all(path.parent().expect("test path has parent"));
@@ -593,6 +590,9 @@ mod tests {
             bindings.action_for(NumpadKey::Num8),
             Some(InputAction::Move(Direction::Up))
         );
-        assert_eq!(bindings.action_for(NumpadKey::Num5), Some(InputAction::Click));
+        assert_eq!(
+            bindings.action_for(NumpadKey::Num5),
+            Some(InputAction::Click)
+        );
     }
 }
