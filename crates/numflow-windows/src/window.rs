@@ -15,7 +15,8 @@ pub enum WindowActivationError {
 ///
 /// Returns [`WindowActivationError`] when the settings window cannot be found.
 pub fn show_numflow_window() -> Result<(), WindowActivationError> {
-    let window = unsafe { FindWindowW(None, w!("NumFlow")) }.map_err(WindowActivationError::Find)?;
+    let window =
+        unsafe { FindWindowW(None, w!("NumFlow")) }.map_err(WindowActivationError::Find)?;
 
     let _ = unsafe { ShowWindow(window, SW_RESTORE) };
     let _ = unsafe { SetForegroundWindow(window) };
