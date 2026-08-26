@@ -63,6 +63,13 @@ impl Default for Bindings {
 
 impl Bindings {
     #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
     pub fn action_for(&self, key: NumpadKey) -> Option<InputAction> {
         self.entries.get(&key).copied()
     }
@@ -84,6 +91,14 @@ impl Bindings {
 mod tests {
     use super::{Bindings, NumpadKey};
     use crate::{Direction, InputAction, MouseButton};
+
+    #[test]
+    fn empty_bindings_resolve_no_actions() {
+        let bindings = Bindings::empty();
+
+        assert_eq!(bindings.action_for(NumpadKey::Num5), None);
+        assert_eq!(bindings.iter().count(), 0);
+    }
 
     #[test]
     fn default_bindings_match_numflow_controls() {

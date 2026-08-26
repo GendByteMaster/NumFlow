@@ -13,9 +13,12 @@ repository = "https://github.com/GendByteMaster/NumFlow"
 build = "build.rs"
 
 [dependencies]
+atomicwrites = "0.4.4"
 numflow-core = { path = "crates/numflow-core" }
+serde = { version = "1", features = ["derive"] }
 slint = { version = "1.17.1", features = ["unstable-winit-030"] }
 thiserror = "2"
+toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
