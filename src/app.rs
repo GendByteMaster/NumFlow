@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use numflow_core::{CoreEffect, ControllerState, InputAction, MotionConfig, MouseButton};
+use numflow_core::{ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton};
 use slint::ComponentHandle;
 
 use crate::{AppWindow, MouseButtonMode, error::AppError};
@@ -115,9 +115,7 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings) {
     {
         let settings = Rc::clone(settings);
         window.on_acceleration_changed(move |acceleration| {
-            settings
-                .borrow_mut()
-                .set_pointer_acceleration(acceleration);
+            settings.borrow_mut().set_pointer_acceleration(acceleration);
         });
     }
 
@@ -160,12 +158,9 @@ mod tests {
     fn ui_defaults_match_core_motion_defaults() {
         let defaults = MotionConfig::default();
 
+        assert!((defaults.base_speed - f64::from(DEFAULT_POINTER_SPEED)).abs() <= f64::EPSILON);
         assert!(
-            (defaults.base_speed - f64::from(DEFAULT_POINTER_SPEED)).abs() <= f64::EPSILON
-        );
-        assert!(
-            (defaults.acceleration - f64::from(DEFAULT_POINTER_ACCELERATION)).abs()
-                <= f64::EPSILON
+            (defaults.acceleration - f64::from(DEFAULT_POINTER_ACCELERATION)).abs() <= f64::EPSILON
         );
     }
 
