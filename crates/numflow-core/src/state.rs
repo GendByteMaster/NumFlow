@@ -75,7 +75,7 @@ impl ControllerState {
         }
     }
 
-    const fn can_click(&self) -> bool {
+    const fn can_click(self) -> bool {
         self.enabled && self.held_button.is_none()
     }
 
