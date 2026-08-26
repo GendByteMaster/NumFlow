@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/numflow-core"]
+resolver = "3"
+
 [package]
 name = "numflow"
 version = "0.1.0"

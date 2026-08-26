@@ -1,0 +1,15 @@
+[package]
+name = "numflow-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Platform-independent input and pointer-control core for NumFlow"
+license = "MIT"
+repository = "https://github.com/GendByteMaster/NumFlow"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
