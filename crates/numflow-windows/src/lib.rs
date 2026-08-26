@@ -9,11 +9,19 @@ mod hook;
 #[cfg(windows)]
 mod hud;
 #[cfg(windows)]
+mod instance;
+#[cfg(windows)]
 mod pointer;
+#[cfg(windows)]
+mod startup;
 
 #[cfg(windows)]
 pub use hook::{HookError, KeyboardHook};
 #[cfg(windows)]
 pub use hud::{HudPosition, recommended_hud_position};
 #[cfg(windows)]
+pub use instance::{SingleInstanceError, SingleInstanceGuard};
+#[cfg(windows)]
 pub use pointer::{PointerError, WindowsPointer};
+#[cfg(windows)]
+pub use startup::{StartupError, StartupRegistration};
