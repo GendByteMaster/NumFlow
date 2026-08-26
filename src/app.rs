@@ -848,6 +848,7 @@ mod tests {
     #[test]
     fn shutdown_disables_controller_and_releases_drag_state() {
         let mut settings = UiSettings::default();
+        settings.set_enabled(true);
         settings.controller.apply(InputAction::Hold);
 
         let effects = settings.shutdown();
