@@ -89,7 +89,7 @@ component KeyTile inherits Rectangle {
 export component AppWindow inherits Window {
     title: "NumFlow";
     width: 620px;
-    height: 790px;
+    height: 842px;
     background: Palette.background;
 
     in-out property <bool> numflow-enabled: false;
@@ -99,6 +99,7 @@ export component AppWindow inherits Window {
     in-out property <MouseButtonMode> active-button: MouseButtonMode.left;
     in-out property <string> active-key: "";
     in-out property <bool> hud-enabled: true;
+    in-out property <string> active-profile: "Normal";
 
     callback enabled-toggled(bool);
     callback mouse-button-changed(MouseButtonMode);
@@ -106,6 +107,7 @@ export component AppWindow inherits Window {
     callback speed-changed(float);
     callback acceleration-changed(float);
     callback hud-toggled(bool);
+    callback profile-changed(string);
     callback reset-defaults();
 
     private property <string> active-button-label:
@@ -182,10 +184,7 @@ export component AppWindow inherits Window {
                     value: root.numflow-enabled ? "On" : "Off";
                 }
 
-                Rectangle {
-                    width: 1px;
-                    background: Palette.border;
-                }
+                Rectangle { width: 1px; background: Palette.border; }
 
                 StatusItem {
                     horizontal-stretch: 1;
@@ -194,10 +193,7 @@ export component AppWindow inherits Window {
                     value: root.active-button-label;
                 }
 
-                Rectangle {
-                    width: 1px;
-                    background: Palette.border;
-                }
+                Rectangle { width: 1px; background: Palette.border; }
 
                 StatusItem {
                     horizontal-stretch: 1;
@@ -224,59 +220,23 @@ export component AppWindow inherits Window {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile {
-                        key-label: "↖ 7";
-                        action-label: "Up-left";
-                        active: root.active-key == "7";
-                    }
-                    KeyTile {
-                        key-label: "↑ 8";
-                        action-label: "Up";
-                        active: root.active-key == "8";
-                    }
-                    KeyTile {
-                        key-label: "9 ↗";
-                        action-label: "Up-right";
-                        active: root.active-key == "9";
-                    }
+                    KeyTile { key-label: "↖ 7"; action-label: "Up-left"; active: root.active-key == "7"; }
+                    KeyTile { key-label: "↑ 8"; action-label: "Up"; active: root.active-key == "8"; }
+                    KeyTile { key-label: "9 ↗"; action-label: "Up-right"; active: root.active-key == "9"; }
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile {
-                        key-label: "← 4";
-                        action-label: "Left";
-                        active: root.active-key == "4";
-                    }
-                    KeyTile {
-                        key-label: "5";
-                        action-label: "Click";
-                        active: root.active-key == "5";
-                    }
-                    KeyTile {
-                        key-label: "6 →";
-                        action-label: "Right";
-                        active: root.active-key == "6";
-                    }
+                    KeyTile { key-label: "← 4"; action-label: "Left"; active: root.active-key == "4"; }
+                    KeyTile { key-label: "5"; action-label: "Click"; active: root.active-key == "5"; }
+                    KeyTile { key-label: "6 →"; action-label: "Right"; active: root.active-key == "6"; }
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile {
-                        key-label: "↙ 1";
-                        action-label: "Down-left";
-                        active: root.active-key == "1";
-                    }
-                    KeyTile {
-                        key-label: "↓ 2";
-                        action-label: "Down";
-                        active: root.active-key == "2";
-                    }
-                    KeyTile {
-                        key-label: "3 ↘";
-                        action-label: "Down-right";
-                        active: root.active-key == "3";
-                    }
+                    KeyTile { key-label: "↙ 1"; action-label: "Down-left"; active: root.active-key == "1"; }
+                    KeyTile { key-label: "↓ 2"; action-label: "Down"; active: root.active-key == "2"; }
+                    KeyTile { key-label: "3 ↘"; action-label: "Down-right"; active: root.active-key == "3"; }
                 }
             }
         }
@@ -338,7 +298,7 @@ export component AppWindow inherits Window {
         }
 
         SurfaceCard {
-            height: 198px;
+            height: 250px;
 
             VerticalLayout {
                 padding: 14px;
@@ -349,6 +309,46 @@ export component AppWindow inherits Window {
                     color: Palette.foreground;
                     font-size: 15px;
                     font-weight: 600;
+                }
+
+                Text {
+                    text: "Profile · " + root.active-profile;
+                    color: Palette.alternate-foreground;
+                    font-size: 12px;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Normal";
+                        primary: root.active-profile == "Normal";
+                        clicked => {
+                            root.active-profile = "Normal";
+                            root.profile-changed("Normal");
+                        }
+                    }
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Precision";
+                        primary: root.active-profile == "Precision";
+                        clicked => {
+                            root.active-profile = "Precision";
+                            root.profile-changed("Precision");
+                        }
+                    }
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Fast";
+                        primary: root.active-profile == "Fast";
+                        clicked => {
+                            root.active-profile = "Fast";
+                            root.profile-changed("Fast");
+                        }
+                    }
                 }
 
                 Text {
@@ -363,9 +363,7 @@ export component AppWindow inherits Window {
                     maximum: 800;
                     step: 10;
                     value <=> root.pointer-speed;
-                    changed(value) => {
-                        root.speed-changed(value);
-                    }
+                    changed(value) => { root.speed-changed(value); }
                 }
 
                 Text {
@@ -380,9 +378,7 @@ export component AppWindow inherits Window {
                     maximum: 3000;
                     step: 50;
                     value <=> root.pointer-acceleration;
-                    changed(value) => {
-                        root.acceleration-changed(value);
-                    }
+                    changed(value) => { root.acceleration-changed(value); }
                 }
 
                 HorizontalLayout {
@@ -400,9 +396,7 @@ export component AppWindow inherits Window {
                     Switch {
                         text: "Precision mode";
                         checked <=> root.precision-enabled;
-                        toggled => {
-                            root.precision-toggled(self.checked);
-                        }
+                        toggled => { root.precision-toggled(self.checked); }
                     }
                 }
             }
@@ -413,30 +407,23 @@ export component AppWindow inherits Window {
             spacing: 10px;
 
             Text {
-                text: "Changes apply immediately";
+                text: "Saved automatically";
                 color: Palette.alternate-foreground;
                 font-size: 11px;
                 vertical-alignment: center;
             }
 
-            Rectangle {
-                horizontal-stretch: 1;
-                background: transparent;
-            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
 
             Switch {
                 text: "HUD";
                 checked <=> root.hud-enabled;
-                toggled => {
-                    root.hud-toggled(self.checked);
-                }
+                toggled => { root.hud-toggled(self.checked); }
             }
 
             Button {
                 text: "Reset to defaults";
-                clicked => {
-                    root.reset-defaults();
-                }
+                clicked => { root.reset-defaults(); }
             }
         }
     }

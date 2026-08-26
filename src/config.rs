@@ -146,7 +146,7 @@ impl AppConfig {
         if !self.profiles.contains_key(profile) {
             return Err(ConfigError::MissingActiveProfile(profile.to_owned()));
         }
-        self.active_profile = profile.to_owned();
+        profile.clone_into(&mut self.active_profile);
         Ok(())
     }
 }
@@ -536,9 +536,11 @@ mod tests {
     fn config_round_trip_preserves_profiles_and_bindings() {
         let path = test_path("round-trip");
         let store = ConfigStore::new(path.clone());
-        let mut config = AppConfig::default();
-        config.active_profile = "Precision".to_owned();
-        config.hud_enabled = false;
+        let config = AppConfig {
+            active_profile: "Precision".to_owned(),
+            hud_enabled: false,
+            ..AppConfig::default()
+        };
 
         store.save(&config).expect("config should save");
         let loaded = store.load_or_default().expect("config should load");

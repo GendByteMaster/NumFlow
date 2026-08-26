@@ -14,6 +14,7 @@ build = "build.rs"
 
 [dependencies]
 atomicwrites = "0.4.4"
+num-traits = "0.2"
 numflow-core = { path = "crates/numflow-core" }
 serde = { version = "1", features = ["derive"] }
 slint = { version = "1.17.1", features = ["unstable-winit-030"] }
