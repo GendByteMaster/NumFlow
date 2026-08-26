@@ -10,19 +10,10 @@ const DEFAULT_POINTER_ACCELERATION: f32 = 900.0;
 
 type SharedUiSettings = Rc<RefCell<UiSettings>>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct UiSettings {
     controller: ControllerState,
     motion: MotionConfig,
-}
-
-impl Default for UiSettings {
-    fn default() -> Self {
-        Self {
-            controller: ControllerState::default(),
-            motion: MotionConfig::default(),
-        }
-    }
 }
 
 impl UiSettings {
