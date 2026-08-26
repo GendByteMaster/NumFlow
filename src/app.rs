@@ -5,7 +5,7 @@ use numflow_core::{Bindings, ControllerState, CoreEffect, InputAction, MotionCon
 use slint::ComponentHandle;
 
 use crate::{
-    AppWindow, MouseButtonMode,
+    AppTray, AppWindow, MouseButtonMode,
     bindings_ui::{
         action_label, choice_from_index, choice_index, key_from_index, key_index, profile_action,
         reset_profile_bindings, set_profile_binding,
@@ -53,8 +53,16 @@ impl UiSettings {
         }
     }
 
+    fn enabled(&self) -> bool {
+        self.controller.is_enabled()
+    }
+
     fn set_enabled(&mut self, enabled: bool) -> Vec<CoreEffect> {
         self.controller.apply(InputAction::SetEnabled(enabled))
+    }
+
+    fn shutdown(&mut self) -> Vec<CoreEffect> {
+        self.controller.shutdown()
     }
 
     fn set_mouse_button(&mut self, button: MouseButton) -> Vec<CoreEffect> {
@@ -99,6 +107,26 @@ impl UiSettings {
 
     fn set_hud_enabled(&mut self, enabled: bool) {
         self.config.hud_enabled = enabled;
+    }
+
+    fn hud_enabled(&self) -> bool {
+        self.config.hud_enabled
+    }
+
+    fn set_start_minimized(&mut self, enabled: bool) {
+        self.config.start_minimized = enabled;
+    }
+
+    fn start_minimized(&self) -> bool {
+        self.config.start_minimized
+    }
+
+    fn set_start_with_windows(&mut self, enabled: bool) {
+        self.config.start_with_windows = enabled;
+    }
+
+    fn start_with_windows(&self) -> bool {
+        self.config.start_with_windows
     }
 
     fn set_profile(&mut self, profile_name: &str) -> Result<Vec<CoreEffect>, ConfigError> {
@@ -178,10 +206,6 @@ impl UiSettings {
         self.controller.held_button()
     }
 
-    fn hud_enabled(&self) -> bool {
-        self.config.hud_enabled
-    }
-
     fn active_profile_name(&self) -> &str {
         &self.config.active_profile
     }
@@ -247,6 +271,7 @@ fn sync_binding_view(window: &AppWindow, settings: &UiSettings) {
 }
 
 fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
+    window.set_numflow_enabled(settings.enabled());
     window.set_active_button(map_mouse_button_to_ui(
         settings.controller.selected_button(),
     ));
@@ -261,6 +286,12 @@ fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
     sync_binding_view(window, settings);
 }
 
+fn sync_tray_from_settings(tray: &AppTray, settings: &UiSettings) {
+    tray.set_numflow_enabled(settings.enabled());
+    tray.set_start_minimized(settings.start_minimized());
+    tray.set_start_with_windows(settings.start_with_windows());
+}
+
 fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     let config = settings.borrow().config_snapshot();
     if let Err(error) = store.save(&config) {
@@ -268,8 +299,25 @@ fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     }
 }
 
+#[cfg(windows)]
+fn set_windows_startup(enabled: bool) -> bool {
+    match numflow_windows::StartupRegistration::set_enabled(enabled) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, enabled, "failed to update Windows startup registration");
+            false
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn set_windows_startup(_enabled: bool) -> bool {
+    true
+}
+
 fn connect_pointer_controls(
     window: &AppWindow,
+    tray: &AppTray,
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
@@ -277,9 +325,13 @@ fn connect_pointer_controls(
     {
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
+        let weak_tray = tray.as_weak();
         window.on_enabled_toggled(move |enabled| {
             let effects = settings.borrow_mut().set_enabled(enabled);
             hud.borrow_mut().observe_effects(&effects);
+            if let Some(tray) = weak_tray.upgrade() {
+                tray.set_numflow_enabled(enabled);
+            }
         });
     }
 
@@ -377,6 +429,7 @@ fn connect_binding_controls(
 
 fn connect_preferences(
     window: &AppWindow,
+    tray: &AppTray,
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
@@ -430,12 +483,17 @@ fn connect_preferences(
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
         let weak_window = window.as_weak();
+        let weak_tray = tray.as_weak();
         window.on_reset_defaults(move || {
             let (effects, held_button) = {
                 let mut settings = settings.borrow_mut();
                 let effects = settings.reset_defaults();
                 (effects, settings.held_button())
             };
+
+            if !set_windows_startup(false) {
+                settings.borrow_mut().set_start_with_windows(true);
+            }
 
             {
                 let mut hud = hud.borrow_mut();
@@ -448,23 +506,111 @@ fn connect_preferences(
             if let Some(window) = weak_window.upgrade() {
                 sync_window_from_settings(&window, &settings.borrow());
             }
+            if let Some(tray) = weak_tray.upgrade() {
+                sync_tray_from_settings(&tray, &settings.borrow());
+            }
             persist_configuration(&settings, &store);
+        });
+    }
+}
+
+fn connect_tray(
+    window: &AppWindow,
+    tray: &AppTray,
+    settings: &SharedUiSettings,
+    hud: &SharedHud,
+    store: &SharedConfigStore,
+) {
+    {
+        let weak_window = window.as_weak();
+        tray.on_open_settings(move || {
+            if let Some(window) = weak_window.upgrade()
+                && let Err(error) = window.show()
+            {
+                tracing::error!(%error, "failed to show NumFlow settings window");
+            }
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let hud = Rc::clone(hud);
+        let weak_window = window.as_weak();
+        let weak_tray = tray.as_weak();
+        tray.on_enabled_toggled(move |enabled| {
+            let effects = settings.borrow_mut().set_enabled(enabled);
+            hud.borrow_mut().observe_effects(&effects);
+            if let Some(window) = weak_window.upgrade() {
+                window.set_numflow_enabled(enabled);
+            }
+            if let Some(tray) = weak_tray.upgrade() {
+                tray.set_numflow_enabled(enabled);
+            }
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let weak_tray = tray.as_weak();
+        tray.on_start_minimized_toggled(move |enabled| {
+            settings.borrow_mut().set_start_minimized(enabled);
+            if let Some(tray) = weak_tray.upgrade() {
+                tray.set_start_minimized(enabled);
+            }
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let weak_tray = tray.as_weak();
+        tray.on_start_with_windows_toggled(move |enabled| {
+            let previous = settings.borrow().start_with_windows();
+            if !set_windows_startup(enabled) {
+                if let Some(tray) = weak_tray.upgrade() {
+                    tray.set_start_with_windows(previous);
+                }
+                return;
+            }
+
+            settings.borrow_mut().set_start_with_windows(enabled);
+            if let Some(tray) = weak_tray.upgrade() {
+                tray.set_start_with_windows(enabled);
+            }
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let hud = Rc::clone(hud);
+        tray.on_exit_requested(move || {
+            let effects = settings.borrow_mut().shutdown();
+            hud.borrow_mut().observe_effects(&effects);
+            tracing::info!("exit requested from NumFlow system tray");
+            if let Err(error) = slint::quit_event_loop() {
+                tracing::error!(%error, "failed to request NumFlow event-loop shutdown");
+            }
         });
     }
 }
 
 fn connect_ui(
     window: &AppWindow,
+    tray: &AppTray,
     settings: &SharedUiSettings,
     hud: &SharedHud,
     store: &SharedConfigStore,
 ) {
-    connect_pointer_controls(window, settings, hud, store);
+    connect_pointer_controls(window, tray, settings, hud, store);
     connect_binding_controls(window, settings, store);
-    connect_preferences(window, settings, hud, store);
+    connect_preferences(window, tray, settings, hud, store);
+    connect_tray(window, tray, settings, hud, store);
 }
 
-pub fn run() -> Result<(), AppError> {
+pub fn run(tray: &AppTray) -> Result<(), AppError> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting NumFlow");
 
     let store = Rc::new(ConfigStore::for_current_user()?);
@@ -488,6 +634,11 @@ pub fn run() -> Result<(), AppError> {
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
     let settings = Rc::new(RefCell::new(UiSettings::from_config(loaded.config)));
     sync_window_from_settings(&window, &settings.borrow());
+    sync_tray_from_settings(tray, &settings.borrow());
+
+    if !set_windows_startup(settings.borrow().start_with_windows()) {
+        tracing::warn!("configured Windows startup preference could not be applied");
+    }
 
     let hud = Rc::new(RefCell::new(
         HudController::new().map_err(|error| AppError::Ui(error.to_string()))?,
@@ -498,15 +649,23 @@ pub fn run() -> Result<(), AppError> {
     tracing::info!(
         profile = settings.borrow().active_profile_name(),
         bindings = settings.borrow().binding_count(),
+        start_minimized = settings.borrow().start_minimized(),
+        start_with_windows = settings.borrow().start_with_windows(),
         path = %store.path().display(),
         "configuration ready"
     );
 
-    connect_ui(&window, &settings, &hud, &store);
+    connect_ui(&window, tray, &settings, &hud, &store);
 
-    window
-        .run()
-        .map_err(|error| AppError::Ui(error.to_string()))
+    if settings.borrow().start_minimized() {
+        tracing::info!("starting NumFlow with settings window hidden");
+    } else {
+        window
+            .show()
+            .map_err(|error| AppError::Ui(error.to_string()))?;
+    }
+
+    slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()))
 }
 
 #[cfg(test)]
@@ -544,6 +703,27 @@ mod tests {
     #[test]
     fn hud_feedback_is_enabled_by_default() {
         assert!(UiSettings::default().hud_enabled());
+    }
+
+    #[test]
+    fn lifecycle_preferences_are_disabled_by_default() {
+        let settings = UiSettings::default();
+
+        assert!(!settings.start_minimized());
+        assert!(!settings.start_with_windows());
+    }
+
+    #[test]
+    fn lifecycle_preferences_update_typed_config() {
+        let mut settings = UiSettings::default();
+
+        settings.set_start_minimized(true);
+        settings.set_start_with_windows(true);
+
+        assert!(settings.start_minimized());
+        assert!(settings.start_with_windows());
+        assert!(settings.config.start_minimized);
+        assert!(settings.config.start_with_windows);
     }
 
     #[test]
@@ -635,6 +815,8 @@ mod tests {
         settings.set_pointer_speed(520.0);
         settings.set_pointer_acceleration(2_000.0);
         settings.set_hud_enabled(false);
+        settings.set_start_minimized(true);
+        settings.set_start_with_windows(true);
         settings
             .set_profile("Fast")
             .expect("built-in Fast profile should exist");
@@ -648,6 +830,8 @@ mod tests {
         assert!((settings.motion.acceleration - 900.0).abs() <= f64::EPSILON);
         assert!(settings.hud_enabled());
         assert_eq!(settings.active_profile_name(), "Normal");
+        assert!(!settings.start_minimized());
+        assert!(!settings.start_with_windows());
     }
 
     #[test]
@@ -659,5 +843,17 @@ mod tests {
         settings.reset_defaults();
 
         assert_eq!(settings.controller.held_button(), Some(MouseButton::Left));
+    }
+
+    #[test]
+    fn shutdown_disables_controller_and_releases_drag_state() {
+        let mut settings = UiSettings::default();
+        settings.controller.apply(InputAction::Hold);
+
+        let effects = settings.shutdown();
+
+        assert!(!settings.enabled());
+        assert_eq!(settings.controller.held_button(), None);
+        assert!(!effects.is_empty());
     }
 }
