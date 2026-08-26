@@ -84,6 +84,7 @@ impl ControllerState {
     ///
     /// Any physically-held button is released before the disabled state is emitted. Calling this
     /// method repeatedly is safe and produces no duplicate release or state-change effects.
+    #[must_use = "shutdown effects must be dispatched so held mouse buttons are actually released"]
     pub fn shutdown(&mut self) -> Vec<CoreEffect> {
         let mut effects = self.release_held_button();
 
