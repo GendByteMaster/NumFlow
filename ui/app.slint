@@ -1,4 +1,5 @@
 import { Button, Palette, Slider, Switch } from "std-widgets.slint";
+export * from "hud.slint";
 
 export enum MouseButtonMode {
     left,
@@ -97,12 +98,14 @@ export component AppWindow inherits Window {
     in-out property <bool> precision-enabled: false;
     in-out property <MouseButtonMode> active-button: MouseButtonMode.left;
     in-out property <string> active-key: "";
+    in-out property <bool> hud-enabled: true;
 
     callback enabled-toggled(bool);
     callback mouse-button-changed(MouseButtonMode);
     callback precision-toggled(bool);
     callback speed-changed(float);
     callback acceleration-changed(float);
+    callback hud-toggled(bool);
     callback reset-defaults();
 
     private property <string> active-button-label:
@@ -419,6 +422,14 @@ export component AppWindow inherits Window {
             Rectangle {
                 horizontal-stretch: 1;
                 background: transparent;
+            }
+
+            Switch {
+                text: "HUD";
+                checked <=> root.hud-enabled;
+                toggled => {
+                    root.hud-toggled(self.checked);
+                }
             }
 
             Button {

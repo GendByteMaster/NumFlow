@@ -14,10 +14,13 @@ build = "build.rs"
 
 [dependencies]
 numflow-core = { path = "crates/numflow-core" }
-slint = "1.17.1"
+slint = { version = "1.17.1", features = ["unstable-winit-030"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[target.'cfg(windows)'.dependencies]
+numflow-windows = { path = "crates/numflow-windows" }
 
 [build-dependencies]
 slint-build = "1.17.1"

@@ -1,5 +1,6 @@
 mod app;
 mod error;
+mod hud;
 
 slint::include_modules!();
 

@@ -1,0 +1,86 @@
+import { Palette } from "std-widgets.slint";
+
+export enum HudIconKind {
+    power-on,
+    power-off,
+    left,
+    right,
+    middle,
+    precision,
+    dragging,
+    info,
+}
+
+export component HudWindow inherits Window {
+    title: "NumFlow HUD";
+    width: 272px;
+    height: 78px;
+    background: transparent;
+    no-frame: true;
+    always-on-top: true;
+
+    in-out property <HudIconKind> icon-kind: HudIconKind.info;
+    in-out property <string> headline: "NumFlow";
+    in-out property <string> detail: "Ready";
+    in-out property <bool> persistent: false;
+
+    private property <image> icon-source:
+        root.icon-kind == HudIconKind.power-on
+            ? @image-url("../assets/icons/numflow/power-on.svg")
+            : root.icon-kind == HudIconKind.power-off
+                ? @image-url("../assets/icons/numflow/power-off.svg")
+                : root.icon-kind == HudIconKind.left
+                    ? @image-url("../assets/icons/numflow/mouse-left.svg")
+                    : root.icon-kind == HudIconKind.right
+                        ? @image-url("../assets/icons/numflow/mouse-right.svg")
+                        : root.icon-kind == HudIconKind.middle
+                            ? @image-url("../assets/icons/numflow/mouse-middle.svg")
+                            : root.icon-kind == HudIconKind.precision
+                                ? @image-url("../assets/icons/numflow/precision-mode.svg")
+                                : root.icon-kind == HudIconKind.dragging
+                                    ? @image-url("../assets/icons/numflow/drag-lock.svg")
+                                    : @image-url("../assets/numflow-icon.svg");
+
+    Rectangle {
+        x: 6px;
+        y: 6px;
+        width: parent.width - 12px;
+        height: parent.height - 12px;
+        background: Palette.background;
+        border-width: root.persistent ? 2px : 1px;
+        border-color: root.persistent ? Palette.accent-background : Palette.border;
+        border-radius: 16px;
+
+        HorizontalLayout {
+            padding: 12px;
+            spacing: 11px;
+
+            Image {
+                source: root.icon-source;
+                width: 34px;
+                height: 34px;
+                image-fit: contain;
+                accessible-role: none;
+            }
+
+            VerticalLayout {
+                spacing: 2px;
+
+                Text {
+                    text: root.headline;
+                    color: Palette.foreground;
+                    font-size: 14px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.detail;
+                    color: Palette.alternate-foreground;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
