@@ -170,7 +170,9 @@ fn ui_float(value: f64, fallback: f32) -> f32 {
 }
 
 fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
-    window.set_active_button(map_mouse_button_to_ui(settings.controller.selected_button()));
+    window.set_active_button(map_mouse_button_to_ui(
+        settings.controller.selected_button(),
+    ));
     window.set_precision_enabled(settings.controller.is_precision_enabled());
     window.set_pointer_speed(ui_float(settings.motion.base_speed, DEFAULT_POINTER_SPEED));
     window.set_pointer_acceleration(ui_float(
@@ -240,9 +242,7 @@ fn connect_ui(
         let settings = Rc::clone(settings);
         let store = Rc::clone(store);
         window.on_acceleration_changed(move |acceleration| {
-            settings
-                .borrow_mut()
-                .set_pointer_acceleration(acceleration);
+            settings.borrow_mut().set_pointer_acceleration(acceleration);
             persist_configuration(&settings, &store);
         });
     }
@@ -348,7 +348,8 @@ pub fn run() -> Result<(), AppError> {
     let hud = Rc::new(RefCell::new(
         HudController::new().map_err(|error| AppError::Ui(error.to_string()))?,
     ));
-    hud.borrow_mut().set_enabled(settings.borrow().hud_enabled());
+    hud.borrow_mut()
+        .set_enabled(settings.borrow().hud_enabled());
 
     tracing::info!(
         profile = settings.borrow().active_profile_name(),
@@ -390,9 +391,7 @@ mod tests {
         assert!((settings.motion.base_speed - 420.0).abs() <= f64::EPSILON);
         assert!((settings.motion.acceleration - 1_600.0).abs() <= f64::EPSILON);
         assert!((settings.config.active_profile().speed - 420.0).abs() <= f64::EPSILON);
-        assert!(
-            (settings.config.active_profile().acceleration - 1_600.0).abs() <= f64::EPSILON
-        );
+        assert!((settings.config.active_profile().acceleration - 1_600.0).abs() <= f64::EPSILON);
     }
 
     #[test]
