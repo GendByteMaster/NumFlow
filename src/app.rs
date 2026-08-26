@@ -6,7 +6,11 @@ use slint::ComponentHandle;
 
 use crate::{
     AppWindow, MouseButtonMode,
-    config::{AppConfig, ConfigError, ConfigLoadStatus, ConfigStore},
+    bindings_ui::{
+        action_label, choice_from_index, choice_index, key_from_index, key_index, profile_action,
+        reset_profile_bindings, set_profile_binding,
+    },
+    config::{AppConfig, ConfigError, ConfigLoadStatus, ConfigStore, NumpadKeyConfig},
     error::AppError,
     hud::{HudController, HudEvent},
 };
@@ -24,6 +28,7 @@ struct UiSettings {
     motion: MotionConfig,
     bindings: Bindings,
     config: AppConfig,
+    selected_binding_key: NumpadKeyConfig,
 }
 
 impl Default for UiSettings {
@@ -44,6 +49,7 @@ impl UiSettings {
             motion: profile.motion_config(),
             bindings: profile.bindings(),
             config,
+            selected_binding_key: NumpadKeyConfig::Num8,
         }
     }
 
@@ -112,6 +118,62 @@ impl UiSettings {
         Ok(effects)
     }
 
+    fn selected_binding_key_index(&self) -> i32 {
+        key_index(self.selected_binding_key)
+    }
+
+    fn selected_binding_action_index(&self) -> i32 {
+        choice_index(profile_action(
+            self.config.active_profile(),
+            self.selected_binding_key,
+        ))
+    }
+
+    fn select_binding_key_index(&mut self, index: i32) -> bool {
+        let Some(key) = key_from_index(index) else {
+            return false;
+        };
+        if self.selected_binding_key == key {
+            return false;
+        }
+
+        self.selected_binding_key = key;
+        true
+    }
+
+    fn set_binding_choice_index(&mut self, index: i32) -> bool {
+        let Some(choice) = choice_from_index(index) else {
+            return false;
+        };
+        let profile = self
+            .config
+            .profiles
+            .get_mut(&self.config.active_profile)
+            .expect("active profile must exist");
+        let changed = set_profile_binding(profile, self.selected_binding_key, choice.action());
+        if changed {
+            self.bindings = profile.bindings();
+        }
+        changed
+    }
+
+    fn reset_active_bindings(&mut self) -> bool {
+        let profile = self
+            .config
+            .profiles
+            .get_mut(&self.config.active_profile)
+            .expect("active profile must exist");
+        let changed = reset_profile_bindings(profile);
+        if changed {
+            self.bindings = profile.bindings();
+        }
+        changed
+    }
+
+    fn binding_label(&self, key: NumpadKeyConfig) -> &'static str {
+        action_label(profile_action(self.config.active_profile(), key))
+    }
+
     fn held_button(&self) -> Option<MouseButton> {
         self.controller.held_button()
     }
@@ -145,6 +207,7 @@ impl UiSettings {
         );
         self.motion = profile.motion_config();
         self.bindings = profile.bindings();
+        self.selected_binding_key = NumpadKeyConfig::Num8;
         effects
     }
 }
@@ -169,6 +232,20 @@ fn ui_float(value: f64, fallback: f32) -> f32 {
     value.to_f32().unwrap_or(fallback)
 }
 
+fn sync_binding_view(window: &AppWindow, settings: &UiSettings) {
+    window.set_binding_key_index(settings.selected_binding_key_index());
+    window.set_binding_action_index(settings.selected_binding_action_index());
+    window.set_numpad_one_label(settings.binding_label(NumpadKeyConfig::Num1).into());
+    window.set_numpad_two_label(settings.binding_label(NumpadKeyConfig::Num2).into());
+    window.set_numpad_three_label(settings.binding_label(NumpadKeyConfig::Num3).into());
+    window.set_numpad_four_label(settings.binding_label(NumpadKeyConfig::Num4).into());
+    window.set_numpad_five_label(settings.binding_label(NumpadKeyConfig::Num5).into());
+    window.set_numpad_six_label(settings.binding_label(NumpadKeyConfig::Num6).into());
+    window.set_numpad_seven_label(settings.binding_label(NumpadKeyConfig::Num7).into());
+    window.set_numpad_eight_label(settings.binding_label(NumpadKeyConfig::Num8).into());
+    window.set_numpad_nine_label(settings.binding_label(NumpadKeyConfig::Num9).into());
+}
+
 fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
     window.set_active_button(map_mouse_button_to_ui(
         settings.controller.selected_button(),
@@ -181,6 +258,7 @@ fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
     ));
     window.set_hud_enabled(settings.hud_enabled());
     window.set_active_profile(settings.active_profile_name().into());
+    sync_binding_view(window, settings);
 }
 
 fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
@@ -243,6 +321,55 @@ fn connect_pointer_controls(
         let store = Rc::clone(store);
         window.on_acceleration_changed(move |acceleration| {
             settings.borrow_mut().set_pointer_acceleration(acceleration);
+            persist_configuration(&settings, &store);
+        });
+    }
+}
+
+fn connect_binding_controls(
+    window: &AppWindow,
+    settings: &SharedUiSettings,
+    store: &SharedConfigStore,
+) {
+    {
+        let settings = Rc::clone(settings);
+        let weak_window = window.as_weak();
+        window.on_binding_key_changed(move |index| {
+            if !settings.borrow_mut().select_binding_key_index(index) {
+                return;
+            }
+            if let Some(window) = weak_window.upgrade() {
+                window.set_binding_action_index(settings.borrow().selected_binding_action_index());
+            }
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let weak_window = window.as_weak();
+        window.on_binding_action_changed(move |index| {
+            if !settings.borrow_mut().set_binding_choice_index(index) {
+                return;
+            }
+            if let Some(window) = weak_window.upgrade() {
+                sync_binding_view(&window, &settings.borrow());
+            }
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let weak_window = window.as_weak();
+        window.on_reset_bindings(move || {
+            if !settings.borrow_mut().reset_active_bindings() {
+                return;
+            }
+            if let Some(window) = weak_window.upgrade() {
+                sync_binding_view(&window, &settings.borrow());
+            }
             persist_configuration(&settings, &store);
         });
     }
@@ -333,6 +460,7 @@ fn connect_ui(
     store: &SharedConfigStore,
 ) {
     connect_pointer_controls(window, settings, hud, store);
+    connect_binding_controls(window, settings, store);
     connect_preferences(window, settings, hud, store);
 }
 
@@ -384,8 +512,11 @@ pub fn run() -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings};
-    use crate::config::AppConfig;
-    use numflow_core::{InputAction, MotionConfig, MouseButton};
+    use crate::{
+        bindings_ui::choice_index,
+        config::{AppConfig, InputActionConfig},
+    };
+    use numflow_core::{Direction, InputAction, MotionConfig, MouseButton, NumpadKey};
 
     #[test]
     fn ui_defaults_match_core_motion_defaults() {
@@ -442,6 +573,54 @@ mod tests {
         assert_eq!(settings.active_profile_name(), "Fast");
         assert!((settings.motion.base_speed - 300.0).abs() <= f64::EPSILON);
         assert!((settings.motion.acceleration - 1_600.0).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn custom_binding_updates_runtime_and_active_profile() {
+        let mut settings = UiSettings::default();
+        let click_index = choice_index(Some(InputActionConfig::Click));
+
+        assert!(settings.set_binding_choice_index(click_index));
+        assert_eq!(
+            settings.bindings.action_for(NumpadKey::Num8),
+            Some(InputAction::Click)
+        );
+        assert_eq!(settings.binding_label(crate::config::NumpadKeyConfig::Num8), "Click");
+    }
+
+    #[test]
+    fn custom_binding_is_profile_specific_and_can_be_unbound() {
+        let mut settings = UiSettings::default();
+        settings.set_binding_choice_index(choice_index(Some(InputActionConfig::Click)));
+
+        settings
+            .set_profile("Fast")
+            .expect("built-in Fast profile should exist");
+        assert_eq!(
+            settings.bindings.action_for(NumpadKey::Num8),
+            Some(InputAction::Move(Direction::Up))
+        );
+
+        settings
+            .set_profile("Normal")
+            .expect("built-in Normal profile should exist");
+        assert!(settings.set_binding_choice_index(choice_index(None)));
+        assert_eq!(settings.bindings.action_for(NumpadKey::Num8), None);
+        assert_eq!(settings.binding_count(), 14);
+    }
+
+    #[test]
+    fn reset_active_bindings_restores_default_mapping() {
+        let mut settings = UiSettings::default();
+        settings.set_binding_choice_index(choice_index(None));
+
+        assert!(settings.reset_active_bindings());
+        assert_eq!(
+            settings.bindings.action_for(NumpadKey::Num8),
+            Some(InputAction::Move(Direction::Up))
+        );
+        assert_eq!(settings.binding_count(), 15);
+        assert!(!settings.reset_active_bindings());
     }
 
     #[test]

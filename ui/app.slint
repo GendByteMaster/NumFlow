@@ -1,4 +1,4 @@
-import { Button, Palette, Slider, Switch } from "std-widgets.slint";
+import { Button, ComboBox, Palette, Slider, Switch } from "std-widgets.slint";
 export * from "hud.slint";
 
 export enum MouseButtonMode {
@@ -89,7 +89,7 @@ component KeyTile inherits Rectangle {
 export component AppWindow inherits Window {
     title: "NumFlow";
     width: 620px;
-    height: 842px;
+    height: root.bindings-editor-visible ? 962px : 842px;
     background: Palette.background;
 
     in-out property <bool> numflow-enabled: false;
@@ -100,6 +100,19 @@ export component AppWindow inherits Window {
     in-out property <string> active-key: "";
     in-out property <bool> hud-enabled: true;
     in-out property <string> active-profile: "Normal";
+    in-out property <int> binding-key-index: 0;
+    in-out property <int> binding-action-index: 1;
+    in-out property <string> numpad-one-label: "Down-left";
+    in-out property <string> numpad-two-label: "Down";
+    in-out property <string> numpad-three-label: "Down-right";
+    in-out property <string> numpad-four-label: "Left";
+    in-out property <string> numpad-five-label: "Click";
+    in-out property <string> numpad-six-label: "Right";
+    in-out property <string> numpad-seven-label: "Up-left";
+    in-out property <string> numpad-eight-label: "Up";
+    in-out property <string> numpad-nine-label: "Up-right";
+
+    private property <bool> bindings-editor-visible: false;
 
     callback enabled-toggled(bool);
     callback mouse-button-changed(MouseButtonMode);
@@ -108,6 +121,9 @@ export component AppWindow inherits Window {
     callback acceleration-changed(float);
     callback hud-toggled(bool);
     callback profile-changed(string);
+    callback binding-key-changed(int);
+    callback binding-action-changed(int);
+    callback reset-bindings();
     callback reset-defaults();
 
     private property <string> active-button-label:
@@ -220,23 +236,23 @@ export component AppWindow inherits Window {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile { key-label: "↖ 7"; action-label: "Up-left"; active: root.active-key == "7"; }
-                    KeyTile { key-label: "↑ 8"; action-label: "Up"; active: root.active-key == "8"; }
-                    KeyTile { key-label: "9 ↗"; action-label: "Up-right"; active: root.active-key == "9"; }
+                    KeyTile { key-label: "↖ 7"; action-label: root.numpad-seven-label; active: root.active-key == "7"; }
+                    KeyTile { key-label: "↑ 8"; action-label: root.numpad-eight-label; active: root.active-key == "8"; }
+                    KeyTile { key-label: "9 ↗"; action-label: root.numpad-nine-label; active: root.active-key == "9"; }
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile { key-label: "← 4"; action-label: "Left"; active: root.active-key == "4"; }
-                    KeyTile { key-label: "5"; action-label: "Click"; active: root.active-key == "5"; }
-                    KeyTile { key-label: "6 →"; action-label: "Right"; active: root.active-key == "6"; }
+                    KeyTile { key-label: "← 4"; action-label: root.numpad-four-label; active: root.active-key == "4"; }
+                    KeyTile { key-label: "5"; action-label: root.numpad-five-label; active: root.active-key == "5"; }
+                    KeyTile { key-label: "6 →"; action-label: root.numpad-six-label; active: root.active-key == "6"; }
                 }
 
                 HorizontalLayout {
                     spacing: 8px;
-                    KeyTile { key-label: "↙ 1"; action-label: "Down-left"; active: root.active-key == "1"; }
-                    KeyTile { key-label: "↓ 2"; action-label: "Down"; active: root.active-key == "2"; }
-                    KeyTile { key-label: "3 ↘"; action-label: "Down-right"; active: root.active-key == "3"; }
+                    KeyTile { key-label: "↙ 1"; action-label: root.numpad-one-label; active: root.active-key == "1"; }
+                    KeyTile { key-label: "↓ 2"; action-label: root.numpad-two-label; active: root.active-key == "2"; }
+                    KeyTile { key-label: "3 ↘"; action-label: root.numpad-three-label; active: root.active-key == "3"; }
                 }
             }
         }
@@ -402,6 +418,74 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.bindings-editor-visible: SurfaceCard {
+            height: 108px;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    Text {
+                        text: "Key bindings · " + root.active-profile;
+                        color: Palette.foreground;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    Text {
+                        text: "Changes apply immediately";
+                        color: Palette.alternate-foreground;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        accessible-label: "NumPad key";
+                        model: [
+                            "Num 8", "Num 2", "Num 4", "Num 6", "Num 7",
+                            "Num 9", "Num 1", "Num 3", "Num 5", "Num +",
+                            "Num 0", "Num .", "Num /", "Num *", "Num -"
+                        ];
+                        current-index <=> root.binding-key-index;
+                        selected(value) => {
+                            root.binding-key-changed(self.current-index);
+                        }
+                    }
+
+                    ComboBox {
+                        horizontal-stretch: 2;
+                        accessible-label: "Binding action";
+                        model: [
+                            "Unbound",
+                            "Move up", "Move down", "Move left", "Move right",
+                            "Move up-left", "Move up-right", "Move down-left", "Move down-right",
+                            "Single click", "Double click", "Hold / drag", "Release drag",
+                            "Select left button", "Select right button", "Select middle button",
+                            "Toggle NumFlow", "Enable NumFlow", "Disable NumFlow",
+                            "Precision on", "Precision off"
+                        ];
+                        current-index <=> root.binding-action-index;
+                        selected(value) => {
+                            root.binding-action-changed(self.current-index);
+                        }
+                    }
+
+                    Button {
+                        text: "Reset bindings";
+                        clicked => { root.reset-bindings(); }
+                    }
+                }
+            }
+        }
+
         HorizontalLayout {
             min-height: 36px;
             spacing: 10px;
@@ -419,6 +503,11 @@ export component AppWindow inherits Window {
                 text: "HUD";
                 checked <=> root.hud-enabled;
                 toggled => { root.hud-toggled(self.checked); }
+            }
+
+            Button {
+                text: root.bindings-editor-visible ? "Done" : "Bindings…";
+                clicked => { root.bindings-editor-visible = !root.bindings-editor-visible; }
             }
 
             Button {

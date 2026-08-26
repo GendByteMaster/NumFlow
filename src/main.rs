@@ -1,4 +1,5 @@
 mod app;
+mod bindings_ui;
 mod config;
 mod error;
 mod hud;
