@@ -3,6 +3,7 @@ mod bindings_ui;
 mod config;
 mod error;
 mod hud;
+mod runtime;
 
 slint::include_modules!();
 
