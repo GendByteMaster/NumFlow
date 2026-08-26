@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use num_traits::ToPrimitive;
+
 use crate::Direction;
 
 const MIN_SPEED: f64 = 1.0;
@@ -223,7 +225,7 @@ fn normalized_vector(active_directions: u8) -> Option<(f64, f64)> {
     }
 
     let magnitude = f64::hypot(x, y);
-    if magnitude == 0.0 {
+    if magnitude <= f64::EPSILON {
         None
     } else {
         Some((x / magnitude, y / magnitude))
@@ -253,7 +255,7 @@ fn integrated_distance(start: f64, end: f64, config: MotionConfig) -> f64 {
         return 0.0;
     }
 
-    if config.acceleration == 0.0 || config.base_speed >= config.max_speed {
+    if config.acceleration <= f64::EPSILON || config.base_speed >= config.max_speed {
         return config.base_speed * (end - start);
     }
 
@@ -279,7 +281,18 @@ fn integrated_distance(start: f64, end: f64, config: MotionConfig) -> f64 {
 }
 
 fn saturating_trunc_i32(value: f64) -> i32 {
-    value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    if !value.is_finite() {
+        return 0;
+    }
+
+    let clamped = value
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+        .trunc();
+    clamped.to_i32().unwrap_or(if clamped.is_sign_negative() {
+        i32::MIN
+    } else {
+        i32::MAX
+    })
 }
 
 #[cfg(test)]
@@ -288,6 +301,15 @@ mod tests {
 
     use super::{MotionConfig, MotionEngine, MotionModifiers};
     use crate::Direction;
+
+    const FLOAT_EPSILON: f64 = 1.0e-9;
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() <= FLOAT_EPSILON,
+            "expected {expected}, got {actual}"
+        );
+    }
 
     fn constant_speed_config(speed: f64) -> MotionConfig {
         MotionConfig {
@@ -309,7 +331,7 @@ mod tests {
             .expect("active movement should produce a step");
 
         assert_eq!((step.dx, step.dy), (100, 0));
-        assert_eq!(step.speed, 100.0);
+        assert_close(step.speed, 100.0);
     }
 
     #[test]
@@ -348,7 +370,7 @@ mod tests {
 
         assert!(first.speed < second.speed);
         assert!(second.speed <= third.speed);
-        assert_eq!(third.speed, 300.0);
+        assert_close(third.speed, 300.0);
     }
 
     #[test]
@@ -365,7 +387,7 @@ mod tests {
             .tick(Duration::from_secs(10), MotionModifiers::default())
             .expect("movement should produce a step");
 
-        assert_eq!(step.speed, 200.0);
+        assert_close(step.speed, 200.0);
     }
 
     #[test]
@@ -390,7 +412,7 @@ mod tests {
 
         assert_eq!(normal_step.dx, 400);
         assert_eq!(precise_step.dx, 100);
-        assert_eq!(precise_step.speed, 100.0);
+        assert_close(precise_step.speed, 100.0);
     }
 
     #[test]
@@ -409,7 +431,7 @@ mod tests {
             .expect("boosted movement should produce a step");
 
         assert_eq!(step.dy, 200);
-        assert_eq!(step.speed, 200.0);
+        assert_close(step.speed, 200.0);
     }
 
     #[test]
