@@ -101,6 +101,9 @@ mod tests {
         let numpad_2_without_numlock = PhysicalKeyEvent::new(0x28, 0x50, false, KeyState::Pressed);
 
         assert_eq!(map_numpad_key(numpad_2_with_numlock), Some(NumpadKey::Num2));
-        assert_eq!(map_numpad_key(numpad_2_without_numlock), Some(NumpadKey::Num2));
+        assert_eq!(
+            map_numpad_key(numpad_2_without_numlock),
+            Some(NumpadKey::Num2)
+        );
     }
 }
