@@ -45,18 +45,18 @@ impl ControllerState {
             InputAction::Move(direction) if self.enabled => {
                 vec![CoreEffect::Pointer(PointerEffect::Move(direction))]
             }
-            InputAction::Click if self.can_click() => vec![CoreEffect::Pointer(
-                PointerEffect::Click {
+            InputAction::Click if self.can_click() => {
+                vec![CoreEffect::Pointer(PointerEffect::Click {
                     button: self.selected_button,
                     kind: ClickKind::Single,
-                },
-            )],
-            InputAction::DoubleClick if self.can_click() => vec![CoreEffect::Pointer(
-                PointerEffect::Click {
+                })]
+            }
+            InputAction::DoubleClick if self.can_click() => {
+                vec![CoreEffect::Pointer(PointerEffect::Click {
                     button: self.selected_button,
                     kind: ClickKind::Double,
-                },
-            )],
+                })]
+            }
             InputAction::Hold if self.enabled && self.held_button.is_none() => {
                 self.held_button = Some(self.selected_button);
                 vec![CoreEffect::Pointer(PointerEffect::ButtonDown(
@@ -68,9 +68,10 @@ impl ControllerState {
             InputAction::ToggleEnabled => self.set_enabled(!self.enabled),
             InputAction::SetEnabled(enabled) => self.set_enabled(enabled),
             InputAction::SetPrecision(precision) => self.set_precision(precision),
-            InputAction::Move(_) | InputAction::Click | InputAction::DoubleClick | InputAction::Hold => {
-                Vec::new()
-            }
+            InputAction::Move(_)
+            | InputAction::Click
+            | InputAction::DoubleClick
+            | InputAction::Hold => Vec::new(),
         }
     }
 
