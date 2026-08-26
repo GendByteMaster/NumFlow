@@ -585,7 +585,10 @@ mod tests {
             settings.bindings.action_for(NumpadKey::Num8),
             Some(InputAction::Click)
         );
-        assert_eq!(settings.binding_label(crate::config::NumpadKeyConfig::Num8), "Click");
+        assert_eq!(
+            settings.binding_label(crate::config::NumpadKeyConfig::Num8),
+            "Click"
+        );
     }
 
     #[test]

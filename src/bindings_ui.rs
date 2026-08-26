@@ -116,7 +116,10 @@ pub(crate) fn set_profile_binding(
     }
 
     match (
-        profile.bindings.iter().position(|binding| binding.key == key),
+        profile
+            .bindings
+            .iter()
+            .position(|binding| binding.key == key),
         action,
     ) {
         (Some(index), Some(action)) => profile.bindings[index].action = action,
@@ -186,7 +189,10 @@ mod tests {
     #[test]
     fn binding_choice_indices_round_trip() {
         for choice in BINDING_CHOICES {
-            assert_eq!(choice_from_index(choice_index(choice.action())), Some(choice));
+            assert_eq!(
+                choice_from_index(choice_index(choice.action())),
+                Some(choice)
+            );
         }
         assert_eq!(choice_from_index(-1), None);
         assert_eq!(choice_from_index(999), None);
