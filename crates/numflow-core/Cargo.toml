@@ -7,6 +7,9 @@ description = "Platform-independent input and pointer-control core for NumFlow"
 license = "MIT"
 repository = "https://github.com/GendByteMaster/NumFlow"
 
+[dependencies]
+num-traits = "0.2"
+
 [lints.rust]
 unsafe_code = "deny"
 
