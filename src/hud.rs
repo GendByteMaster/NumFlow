@@ -1,6 +1,6 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-use numflow_core::MouseButton;
+use numflow_core::{CoreEffect, MouseButton, PointerEffect, StateChange};
 use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
 
 use crate::{HudIconKind, HudWindow};
@@ -97,16 +97,6 @@ impl HudController {
         })
     }
 
-    #[must_use]
-    pub const fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    #[must_use]
-    pub fn is_dragging_visible(&self) -> bool {
-        self.persistent.get()
-    }
-
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
@@ -116,12 +106,66 @@ impl HudController {
         }
     }
 
+    pub fn observe_effects(&mut self, effects: &[CoreEffect]) {
+        for effect in effects {
+            match *effect {
+                CoreEffect::Pointer(PointerEffect::ButtonDown(button)) => {
+                    self.show_dragging(button);
+                }
+                CoreEffect::Pointer(PointerEffect::ButtonUp(_)) => {
+                    self.clear_dragging();
+                }
+                CoreEffect::State(StateChange::Enabled(enabled)) => {
+                    self.show_event(HudEvent::NumFlowEnabled(enabled));
+                }
+                CoreEffect::State(StateChange::Precision(enabled)) => {
+                    self.show_event(HudEvent::Precision(enabled));
+                }
+                CoreEffect::State(StateChange::SelectedButton(button)) => {
+                    self.show_event(HudEvent::ButtonSelected(button));
+                }
+                CoreEffect::Pointer(PointerEffect::Move(_) | PointerEffect::Click { .. }) => {}
+            }
+        }
+    }
+
+    pub fn sync_held_button(&mut self, held_button: Option<MouseButton>) {
+        if !self.enabled {
+            return;
+        }
+
+        if let Some(button) = held_button {
+            self.show_dragging(button);
+        } else if self.persistent.get() {
+            self.clear_dragging();
+        }
+    }
+
     pub fn show_event(&mut self, event: HudEvent) {
         if !self.enabled {
             return;
         }
 
         let presentation = HudPresentation::from_event(event);
+        if self.persistent.get() && !presentation.persistent {
+            return;
+        }
+
+        self.present(presentation);
+    }
+
+    fn show_dragging(&mut self, button: MouseButton) {
+        self.show_event(HudEvent::Dragging(button));
+    }
+
+    fn clear_dragging(&mut self) {
+        self.hide_timer.stop();
+        self.persistent.set(false);
+        self.window.set_persistent(false);
+        self.hide_window();
+    }
+
+    fn present(&mut self, presentation: HudPresentation) {
         self.window.set_headline(presentation.headline.into());
         self.window.set_detail(presentation.detail.into());
         self.window.set_icon_kind(presentation.icon);
@@ -140,17 +184,6 @@ impl HudController {
         } else {
             self.start_auto_hide();
         }
-    }
-
-    pub fn show_dragging(&mut self, button: MouseButton) {
-        self.show_event(HudEvent::Dragging(button));
-    }
-
-    pub fn clear_dragging(&mut self) {
-        self.hide_timer.stop();
-        self.persistent.set(false);
-        self.window.set_persistent(false);
-        self.hide_window();
     }
 
     fn start_auto_hide(&self) {

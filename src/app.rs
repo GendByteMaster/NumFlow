@@ -33,16 +33,16 @@ impl Default for UiSettings {
 }
 
 impl UiSettings {
-    fn set_enabled(&mut self, enabled: bool) {
-        self.apply_state_action(InputAction::SetEnabled(enabled));
+    fn set_enabled(&mut self, enabled: bool) -> Vec<CoreEffect> {
+        self.controller.apply(InputAction::SetEnabled(enabled))
     }
 
-    fn set_mouse_button(&mut self, button: MouseButton) {
-        self.apply_state_action(InputAction::SelectButton(button));
+    fn set_mouse_button(&mut self, button: MouseButton) -> Vec<CoreEffect> {
+        self.controller.apply(InputAction::SelectButton(button))
     }
 
-    fn set_precision(&mut self, enabled: bool) {
-        self.apply_state_action(InputAction::SetPrecision(enabled));
+    fn set_precision(&mut self, enabled: bool) -> Vec<CoreEffect> {
+        self.controller.apply(InputAction::SetPrecision(enabled))
     }
 
     fn set_pointer_speed(&mut self, speed: f32) {
@@ -61,27 +61,18 @@ impl UiSettings {
         self.hud_enabled = enabled;
     }
 
-    fn reset_defaults(&mut self) {
-        let enabled = self.controller.is_enabled();
-
-        self.controller = ControllerState::default();
-        if enabled {
-            self.apply_state_action(InputAction::SetEnabled(true));
-        }
-
-        self.motion = MotionConfig::default();
-        self.hud_enabled = true;
+    fn held_button(&self) -> Option<MouseButton> {
+        self.controller.held_button()
     }
 
-    fn apply_state_action(&mut self, action: InputAction) {
-        let effects = self.controller.apply(action);
-
-        debug_assert!(
-            effects
-                .iter()
-                .all(|effect| matches!(effect, CoreEffect::State(_))),
-            "UI settings action unexpectedly emitted a pointer effect"
-        );
+    fn reset_defaults(&mut self) -> Vec<CoreEffect> {
+        let mut effects = self
+            .controller
+            .apply(InputAction::SelectButton(MouseButton::Left));
+        effects.extend(self.controller.apply(InputAction::SetPrecision(false)));
+        self.motion = MotionConfig::default();
+        self.hud_enabled = true;
+        effects
     }
 }
 
@@ -98,9 +89,8 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         window.on_enabled_toggled(move |enabled| {
-            settings.borrow_mut().set_enabled(enabled);
-            hud.borrow_mut()
-                .show_event(HudEvent::NumFlowEnabled(enabled));
+            let effects = settings.borrow_mut().set_enabled(enabled);
+            hud.borrow_mut().observe_effects(&effects);
         });
     }
 
@@ -108,10 +98,10 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         window.on_mouse_button_changed(move |button| {
-            let button = map_mouse_button(button);
-            settings.borrow_mut().set_mouse_button(button);
-            hud.borrow_mut()
-                .show_event(HudEvent::ButtonSelected(button));
+            let effects = settings
+                .borrow_mut()
+                .set_mouse_button(map_mouse_button(button));
+            hud.borrow_mut().observe_effects(&effects);
         });
     }
 
@@ -119,8 +109,8 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         window.on_precision_toggled(move |enabled| {
-            settings.borrow_mut().set_precision(enabled);
-            hud.borrow_mut().show_event(HudEvent::Precision(enabled));
+            let effects = settings.borrow_mut().set_precision(enabled);
+            hud.borrow_mut().observe_effects(&effects);
         });
     }
 
@@ -142,11 +132,16 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         window.on_hud_toggled(move |enabled| {
-            settings.borrow_mut().set_hud_enabled(enabled);
+            let held_button = {
+                let mut settings = settings.borrow_mut();
+                settings.set_hud_enabled(enabled);
+                settings.held_button()
+            };
 
             let mut hud = hud.borrow_mut();
             hud.set_enabled(enabled);
             if enabled {
+                hud.sync_held_button(held_button);
                 hud.show_event(HudEvent::HudEnabled);
             }
         });
@@ -158,11 +153,17 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
         let weak_window = window.as_weak();
 
         window.on_reset_defaults(move || {
-            settings.borrow_mut().reset_defaults();
+            let (effects, held_button) = {
+                let mut settings = settings.borrow_mut();
+                let effects = settings.reset_defaults();
+                (effects, settings.held_button())
+            };
 
             {
                 let mut hud = hud.borrow_mut();
                 hud.set_enabled(true);
+                hud.observe_effects(&effects);
+                hud.sync_held_button(held_button);
                 hud.show_event(HudEvent::DefaultsRestored);
             }
 
@@ -196,7 +197,7 @@ pub fn run() -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings};
-    use numflow_core::{MotionConfig, MouseButton};
+    use numflow_core::{InputAction, MotionConfig, MouseButton};
 
     #[test]
     fn ui_defaults_match_core_motion_defaults() {
@@ -242,5 +243,16 @@ mod tests {
         assert!((settings.motion.base_speed - 180.0).abs() <= f64::EPSILON);
         assert!((settings.motion.acceleration - 900.0).abs() <= f64::EPSILON);
         assert!(settings.hud_enabled);
+    }
+
+    #[test]
+    fn reset_does_not_drop_an_active_drag() {
+        let mut settings = UiSettings::default();
+        settings.set_enabled(true);
+        settings.controller.apply(InputAction::Hold);
+
+        settings.reset_defaults();
+
+        assert_eq!(settings.controller.held_button(), Some(MouseButton::Left));
     }
 }
