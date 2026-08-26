@@ -1,0 +1,631 @@
+use numflow_core::{Bindings, CoreEffect, InputAction, MotionConfig, MouseButton};
+
+#[derive(Debug, Clone)]
+pub struct RuntimeConfig {
+    pub motion: MotionConfig,
+    pub bindings: Bindings,
+    pub selected_button: MouseButton,
+    pub precision: bool,
+}
+
+impl RuntimeConfig {
+    #[must_use]
+    pub fn new(
+        motion: MotionConfig,
+        bindings: Bindings,
+        selected_button: MouseButton,
+        precision: bool,
+    ) -> Self {
+        Self {
+            motion,
+            bindings,
+            selected_button,
+            precision,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeEvent {
+    Effects(Vec<CoreEffect>),
+    Fault(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    #[error("failed to start NumFlow background runtime: {0}")]
+    Start(String),
+    #[error("NumFlow background runtime command channel is closed")]
+    CommandChannelClosed,
+    #[error("NumFlow background runtime worker panicked")]
+    WorkerPanicked,
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::{
+        sync::mpsc::{self, Receiver, Sender, TryRecvError},
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
+    };
+
+    use numflow_core::{
+        ClickKind, ControllerState, CoreEffect, InputAction, MotionEngine, MotionModifiers,
+        PointerBackend, PointerEffect, StateChange,
+    };
+    use numflow_windows::{
+        KeyState, KeyboardEventNormalizer, KeyboardHook, NormalizedKeyEvent, WindowsPointer,
+    };
+
+    use super::{RuntimeConfig, RuntimeError, RuntimeEvent};
+
+    const MOTION_TICK: Duration = Duration::from_millis(8);
+
+    #[derive(Debug)]
+    enum RuntimeCommand {
+        Apply(InputAction),
+        Configure(RuntimeConfig),
+        SetMotionConfig(numflow_core::MotionConfig),
+        SetBindings(numflow_core::Bindings),
+        Shutdown,
+    }
+
+    #[derive(Debug)]
+    pub struct BackgroundRuntime {
+        command_sender: Sender<RuntimeCommand>,
+        event_receiver: Receiver<RuntimeEvent>,
+        join: Option<JoinHandle<()>>,
+    }
+
+    impl BackgroundRuntime {
+        pub fn start(config: RuntimeConfig) -> Result<Self, RuntimeError> {
+            let (command_sender, command_receiver) = mpsc::channel();
+            let (event_sender, event_receiver) = mpsc::channel();
+            let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+
+            let join = thread::Builder::new()
+                .name("numflow-runtime".to_owned())
+                .spawn(move || {
+                    worker_main(config, command_receiver, event_sender, ready_sender);
+                })
+                .map_err(|error| RuntimeError::Start(error.to_string()))?;
+
+            match ready_receiver.recv() {
+                Ok(Ok(())) => Ok(Self {
+                    command_sender,
+                    event_receiver,
+                    join: Some(join),
+                }),
+                Ok(Err(error)) => {
+                    let _ = join.join();
+                    Err(RuntimeError::Start(error))
+                }
+                Err(error) => {
+                    let _ = join.join();
+                    Err(RuntimeError::Start(error.to_string()))
+                }
+            }
+        }
+
+        pub fn apply(&self, action: InputAction) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::Apply(action))
+        }
+
+        pub fn configure(&self, config: RuntimeConfig) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::Configure(config))
+        }
+
+        pub fn set_motion_config(
+            &self,
+            config: numflow_core::MotionConfig,
+        ) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::SetMotionConfig(config))
+        }
+
+        pub fn set_bindings(&self, bindings: numflow_core::Bindings) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::SetBindings(bindings))
+        }
+
+        #[must_use]
+        pub fn drain_events(&self) -> Vec<RuntimeEvent> {
+            let mut events = Vec::new();
+            while let Ok(event) = self.event_receiver.try_recv() {
+                events.push(event);
+            }
+            events
+        }
+
+        pub fn shutdown(&mut self) -> Result<(), RuntimeError> {
+            let Some(join) = self.join.take() else {
+                return Ok(());
+            };
+
+            let _ = self.command_sender.send(RuntimeCommand::Shutdown);
+            join.join().map_err(|_| RuntimeError::WorkerPanicked)
+        }
+
+        fn send(&self, command: RuntimeCommand) -> Result<(), RuntimeError> {
+            self.command_sender
+                .send(command)
+                .map_err(|_| RuntimeError::CommandChannelClosed)
+        }
+    }
+
+    impl Drop for BackgroundRuntime {
+        fn drop(&mut self) {
+            let _ = self.shutdown();
+        }
+    }
+
+    struct RuntimeMachine<B: PointerBackend> {
+        controller: ControllerState,
+        motion: MotionEngine,
+        bindings: numflow_core::Bindings,
+        pointer: B,
+    }
+
+    impl<B> RuntimeMachine<B>
+    where
+        B: PointerBackend,
+    {
+        fn new(config: RuntimeConfig, pointer: B) -> Self {
+            let mut controller = ControllerState::default();
+            let _ = controller.apply(InputAction::SelectButton(config.selected_button));
+            let _ = controller.apply(InputAction::SetPrecision(config.precision));
+
+            Self {
+                controller,
+                motion: MotionEngine::new(config.motion),
+                bindings: config.bindings,
+                pointer,
+            }
+        }
+
+        fn enabled(&self) -> bool {
+            self.controller.is_enabled()
+        }
+
+        fn configure(&mut self, config: RuntimeConfig) -> Result<(), B::Error> {
+            self.motion.stop();
+            self.motion.set_config(config.motion);
+            self.bindings = config.bindings;
+            let effects = self
+                .controller
+                .apply(InputAction::SelectButton(config.selected_button));
+            self.execute_effects(&effects)?;
+            let effects = self
+                .controller
+                .apply(InputAction::SetPrecision(config.precision));
+            self.execute_effects(&effects)
+        }
+
+        fn set_motion_config(&mut self, config: numflow_core::MotionConfig) {
+            self.motion.set_config(config);
+        }
+
+        fn set_bindings(&mut self, bindings: numflow_core::Bindings) {
+            self.motion.stop();
+            self.bindings = bindings;
+        }
+
+        fn apply_action(&mut self, action: InputAction) -> Result<Vec<CoreEffect>, B::Error> {
+            let effects = self.controller.apply(action);
+            if !self.controller.is_enabled() {
+                self.motion.stop();
+            }
+            self.execute_effects(&effects)?;
+            Ok(effects)
+        }
+
+        fn handle_key_event(
+            &mut self,
+            event: NormalizedKeyEvent,
+        ) -> Result<Vec<CoreEffect>, B::Error> {
+            if let InputAction::Move(direction) = event.action {
+                match event.state {
+                    KeyState::Pressed if self.controller.is_enabled() => self.motion.press(direction),
+                    KeyState::Released => self.motion.release(direction),
+                    KeyState::Pressed => {}
+                }
+                return Ok(Vec::new());
+            }
+
+            if event.state == KeyState::Pressed {
+                self.apply_action(event.action)
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn tick(&mut self, elapsed: Duration) -> Result<(), B::Error> {
+            if !self.controller.is_enabled() {
+                self.motion.stop();
+                return Ok(());
+            }
+
+            let modifiers = MotionModifiers {
+                precision: self.controller.is_precision_enabled(),
+                boost: false,
+            };
+            if let Some(step) = self.motion.tick(elapsed, modifiers) {
+                self.pointer.move_relative(step.dx, step.dy)?;
+            }
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> Result<Vec<CoreEffect>, B::Error> {
+            self.motion.stop();
+            let effects = self.controller.shutdown();
+            self.execute_effects(&effects)?;
+            self.pointer.release_all()?;
+            Ok(effects)
+        }
+
+        fn execute_effects(&mut self, effects: &[CoreEffect]) -> Result<(), B::Error> {
+            for effect in effects {
+                let CoreEffect::Pointer(pointer_effect) = effect else {
+                    continue;
+                };
+                match pointer_effect {
+                    PointerEffect::Move(_) => {}
+                    PointerEffect::Click { button, kind } => match kind {
+                        ClickKind::Single => self.pointer.click(*button)?,
+                        ClickKind::Double => self.pointer.double_click(*button)?,
+                    },
+                    PointerEffect::ButtonDown(button) => self.pointer.button_down(*button)?,
+                    PointerEffect::ButtonUp(button) => self.pointer.button_up(*button)?,
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn worker_main(
+        config: RuntimeConfig,
+        command_receiver: Receiver<RuntimeCommand>,
+        event_sender: Sender<RuntimeEvent>,
+        ready_sender: mpsc::SyncSender<Result<(), String>>,
+    ) {
+        let (hook, keyboard_receiver) = match KeyboardHook::start() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = ready_sender.send(Err(error.to_string()));
+                return;
+            }
+        };
+        hook.set_interception_enabled(false);
+
+        let mut normalizer = KeyboardEventNormalizer::default();
+        let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
+        let _ = ready_sender.send(Ok(()));
+        let mut previous_tick = Instant::now();
+        let mut running = true;
+
+        while running {
+            let loop_started = Instant::now();
+
+            loop {
+                match command_receiver.try_recv() {
+                    Ok(RuntimeCommand::Shutdown) => {
+                        let effects = match machine.shutdown() {
+                            Ok(effects) => effects,
+                            Err(error) => {
+                                let _ = event_sender.send(RuntimeEvent::Fault(error.to_string()));
+                                Vec::new()
+                            }
+                        };
+                        if !effects.is_empty() {
+                            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+                        }
+                        hook.emergency_disable();
+                        running = false;
+                        break;
+                    }
+                    Ok(command) => {
+                        if let Err(error) = apply_command(
+                            command,
+                            &mut machine,
+                            &hook,
+                            &mut normalizer,
+                        ) {
+                            fail_safe(&mut machine, &hook, &mut normalizer, &event_sender, &error);
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        let _ = machine.shutdown();
+                        hook.emergency_disable();
+                        running = false;
+                        break;
+                    }
+                }
+            }
+
+            if !running {
+                break;
+            }
+
+            while let Ok(event) = keyboard_receiver.try_recv() {
+                let Some(normalized) = normalizer.process(event, &machine.bindings) else {
+                    continue;
+                };
+                match machine.handle_key_event(normalized) {
+                    Ok(effects) => {
+                        if effects.iter().any(|effect| {
+                            matches!(effect, CoreEffect::State(StateChange::Enabled(false)))
+                        }) {
+                            normalizer.reset();
+                        }
+                        hook.set_interception_enabled(machine.enabled());
+                        if !effects.is_empty() {
+                            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+                        }
+                    }
+                    Err(error) => {
+                        fail_safe(
+                            &mut machine,
+                            &hook,
+                            &mut normalizer,
+                            &event_sender,
+                            &error.to_string(),
+                        );
+                    }
+                }
+            }
+
+            let now = Instant::now();
+            let elapsed = now.saturating_duration_since(previous_tick);
+            previous_tick = now;
+            if let Err(error) = machine.tick(elapsed) {
+                fail_safe(
+                    &mut machine,
+                    &hook,
+                    &mut normalizer,
+                    &event_sender,
+                    &error.to_string(),
+                );
+            }
+
+            let spent = loop_started.elapsed();
+            if spent < MOTION_TICK {
+                thread::sleep(MOTION_TICK - spent);
+            }
+        }
+    }
+
+    fn apply_command(
+        command: RuntimeCommand,
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+    ) -> Result<(), String> {
+        match command {
+            RuntimeCommand::Apply(action) => {
+                machine.apply_action(action).map_err(|error| error.to_string())?;
+                if !machine.enabled() {
+                    machine.motion.stop();
+                    normalizer.reset();
+                }
+                hook.set_interception_enabled(machine.enabled());
+            }
+            RuntimeCommand::Configure(config) => {
+                machine.configure(config).map_err(|error| error.to_string())?;
+                normalizer.reset();
+                hook.set_interception_enabled(machine.enabled());
+            }
+            RuntimeCommand::SetMotionConfig(config) => machine.set_motion_config(config),
+            RuntimeCommand::SetBindings(bindings) => {
+                machine.set_bindings(bindings);
+                normalizer.reset();
+            }
+            RuntimeCommand::Shutdown => unreachable!("shutdown is handled by the worker loop"),
+        }
+        Ok(())
+    }
+
+    fn fail_safe(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sender: &Sender<RuntimeEvent>,
+        reason: &str,
+    ) {
+        machine.motion.stop();
+        normalizer.reset();
+        let effects = machine.controller.shutdown();
+        let _ = machine.execute_effects(&effects);
+        let release_error = machine.pointer.release_all().err();
+        hook.emergency_disable();
+
+        if !effects.is_empty() {
+            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+        }
+        let message = release_error.map_or_else(
+            || reason.to_owned(),
+            |error| format!("{reason}; additionally failed to release pointer state: {error}"),
+        );
+        let _ = event_sender.send(RuntimeEvent::Fault(message));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::{convert::Infallible, time::Duration};
+
+        use numflow_core::{
+            Bindings, Direction, InputAction, MotionConfig, MouseButton, NumpadKey, PointerBackend,
+        };
+        use numflow_windows::{KeyState, NormalizedKeyEvent};
+
+        use super::RuntimeMachine;
+        use crate::runtime::RuntimeConfig;
+
+        #[derive(Debug, Default)]
+        struct MockPointer {
+            moves: Vec<(i32, i32)>,
+            held: Vec<MouseButton>,
+            releases: usize,
+        }
+
+        impl PointerBackend for MockPointer {
+            type Error = Infallible;
+
+            fn move_relative(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
+                self.moves.push((dx, dy));
+                Ok(())
+            }
+
+            fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+                if !self.held.contains(&button) {
+                    self.held.push(button);
+                }
+                Ok(())
+            }
+
+            fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+                self.held.retain(|held| *held != button);
+                self.releases += 1;
+                Ok(())
+            }
+
+            fn click(&mut self, _button: MouseButton) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn double_click(&mut self, _button: MouseButton) -> Result<(), Self::Error> {
+                Ok(())
+            }
+
+            fn release_all(&mut self) -> Result<(), Self::Error> {
+                self.held.clear();
+                Ok(())
+            }
+        }
+
+        fn runtime_machine() -> RuntimeMachine<MockPointer> {
+            RuntimeMachine::new(
+                RuntimeConfig::new(
+                    MotionConfig::default(),
+                    Bindings::default(),
+                    MouseButton::Left,
+                    false,
+                ),
+                MockPointer::default(),
+            )
+        }
+
+        #[test]
+        fn runtime_starts_disabled_and_does_not_move_pointer() {
+            let mut machine = runtime_machine();
+            let event = NormalizedKeyEvent {
+                key: NumpadKey::Num8,
+                action: InputAction::Move(Direction::Up),
+                state: KeyState::Pressed,
+                repeated: false,
+            };
+
+            machine.handle_key_event(event).expect("mock is infallible");
+            machine
+                .tick(Duration::from_millis(100))
+                .expect("mock is infallible");
+
+            assert!(!machine.enabled());
+            assert!(machine.pointer.moves.is_empty());
+        }
+
+        #[test]
+        fn enabled_runtime_turns_held_move_key_into_pointer_motion() {
+            let mut machine = runtime_machine();
+            machine
+                .apply_action(InputAction::SetEnabled(true))
+                .expect("mock is infallible");
+            machine
+                .handle_key_event(NormalizedKeyEvent {
+                    key: NumpadKey::Num8,
+                    action: InputAction::Move(Direction::Up),
+                    state: KeyState::Pressed,
+                    repeated: false,
+                })
+                .expect("mock is infallible");
+            machine
+                .tick(Duration::from_millis(100))
+                .expect("mock is infallible");
+
+            assert!(!machine.pointer.moves.is_empty());
+            assert!(machine.pointer.moves.iter().any(|(_, dy)| *dy < 0));
+        }
+
+        #[test]
+        fn shutdown_releases_a_runtime_held_button() {
+            let mut machine = runtime_machine();
+            machine
+                .apply_action(InputAction::SetEnabled(true))
+                .expect("mock is infallible");
+            machine
+                .apply_action(InputAction::Hold)
+                .expect("mock is infallible");
+            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
+
+            let effects = machine.shutdown().expect("mock is infallible");
+
+            assert!(!machine.enabled());
+            assert!(machine.pointer.held.is_empty());
+            assert!(!effects.is_empty());
+            assert_eq!(machine.pointer.releases, 1);
+        }
+
+        #[test]
+        fn changing_bindings_stops_existing_motion() {
+            let mut machine = runtime_machine();
+            machine
+                .apply_action(InputAction::SetEnabled(true))
+                .expect("mock is infallible");
+            machine.motion.press(Direction::Right);
+            assert!(machine.motion.is_moving());
+
+            let mut bindings = Bindings::default();
+            bindings.bind(NumpadKey::Num6, InputAction::Click);
+            machine.set_bindings(bindings);
+
+            assert!(!machine.motion.is_moving());
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use platform::BackgroundRuntime;
+
+#[cfg(not(windows))]
+#[derive(Debug, Default)]
+pub struct BackgroundRuntime;
+
+#[cfg(not(windows))]
+impl BackgroundRuntime {
+    pub fn start(_config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        Ok(Self)
+    }
+
+    pub fn apply(&self, _action: InputAction) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn configure(&self, _config: RuntimeConfig) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn set_motion_config(&self, _config: MotionConfig) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn set_bindings(&self, _bindings: Bindings) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<RuntimeEvent> {
+        Vec::new()
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
