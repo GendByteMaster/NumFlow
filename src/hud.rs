@@ -157,10 +157,8 @@ impl HudController {
         let weak_window = self.window.as_weak();
         let persistent = Rc::clone(&self.persistent);
 
-        self.hide_timer.start(
-            TimerMode::SingleShot,
-            HUD_AUTO_HIDE,
-            move || {
+        self.hide_timer
+            .start(TimerMode::SingleShot, HUD_AUTO_HIDE, move || {
                 if persistent.get() {
                     return;
                 }
@@ -170,8 +168,7 @@ impl HudController {
                 {
                     tracing::warn!(%error, "failed to auto-hide NumFlow HUD");
                 }
-            },
-        );
+            });
     }
 
     fn hide_window(&self) {
@@ -197,7 +194,9 @@ impl HudController {
             });
 
             if configured.is_none() {
-                tracing::warn!("NumFlow HUD requires the Slint winit backend for click-through mode");
+                tracing::warn!(
+                    "NumFlow HUD requires the Slint winit backend for click-through mode"
+                );
             }
         });
     }
@@ -210,8 +209,7 @@ fn position_hud_window(winit_window: &slint::winit_030::winit::window::Window) {
         numflow_windows::recommended_hud_position(size.width, size.height, HUD_MARGIN_PX)
     {
         winit_window.set_outer_position(slint::winit_030::winit::dpi::PhysicalPosition::new(
-            position.x,
-            position.y,
+            position.x, position.y,
         ));
     }
 }

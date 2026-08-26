@@ -2,9 +2,7 @@ use std::mem::size_of;
 
 use windows::Win32::{
     Foundation::{POINT, RECT},
-    Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
-    },
+    Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
     UI::WindowsAndMessaging::GetCursorPos,
 };
 
@@ -97,12 +95,7 @@ fn choose_hud_position(
         .expect("HUD always has four placement candidates")
 }
 
-fn distance_from_cursor(
-    position: HudPosition,
-    cursor: POINT,
-    width: i32,
-    height: i32,
-) -> i64 {
+fn distance_from_cursor(position: HudPosition, cursor: POINT, width: i32, height: i32) -> i64 {
     let center_x = i64::from(position.x) + i64::from(width) / 2;
     let center_y = i64::from(position.y) + i64::from(height) / 2;
     let dx = center_x - i64::from(cursor.x);
@@ -127,13 +120,7 @@ mod tests {
     fn cursor_near_top_left_places_hud_bottom_right() {
         let position = choose_hud_position(WORK, POINT { x: 80, y: 80 }, 272, 78, 24);
 
-        assert_eq!(
-            position,
-            HudPosition {
-                x: 1624,
-                y: 938
-            }
-        );
+        assert_eq!(position, HudPosition { x: 1624, y: 938 });
     }
 
     #[test]

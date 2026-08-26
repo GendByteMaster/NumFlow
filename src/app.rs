@@ -134,9 +134,7 @@ fn connect_ui(window: &AppWindow, settings: &SharedUiSettings, hud: &SharedHud) 
     {
         let settings = Rc::clone(settings);
         window.on_acceleration_changed(move |acceleration| {
-            settings
-                .borrow_mut()
-                .set_pointer_acceleration(acceleration);
+            settings.borrow_mut().set_pointer_acceleration(acceleration);
         });
     }
 
