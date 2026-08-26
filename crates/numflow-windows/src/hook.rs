@@ -1,37 +1,44 @@
 use std::{
     io,
-    ptr,
     sync::{
         Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
 };
 
-use windows_sys::Win32::{
-    System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
-    UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
-        PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+use windows::{
+    Win32::{
+        Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
+        UI::WindowsAndMessaging::{
+            CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
+            PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+            WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        },
     },
+    core::Error as WindowsError,
 };
 
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
 static EVENT_SENDER: OnceLock<Mutex<Option<SyncSender<PhysicalKeyEvent>>>> = OnceLock::new();
+static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
     #[error("the NumFlow keyboard hook is already active")]
     AlreadyActive,
+    #[error("failed to spawn the Windows hook thread: {0}")]
+    ThreadSpawn(#[source] io::Error),
     #[error("failed to install WH_KEYBOARD_LL: {0}")]
-    Install(#[source] io::Error),
-    #[error("failed to create the Windows hook message queue: {0}")]
-    MessageQueue(#[source] io::Error),
+    Install(#[source] WindowsError),
+    #[error("the Windows hook message loop failed: {0}")]
+    MessageLoop(#[source] WindowsError),
     #[error("failed to stop the Windows hook thread: {0}")]
-    Stop(#[source] io::Error),
+    Stop(#[source] WindowsError),
     #[error("the Windows hook thread terminated unexpectedly")]
     ThreadTerminated,
     #[error("the Windows hook thread panicked")]
@@ -59,7 +66,7 @@ impl KeyboardHook {
         let join = thread::Builder::new()
             .name("numflow-keyboard-hook".to_owned())
             .spawn(move || hook_thread(event_sender, ready_sender))
-            .map_err(HookError::MessageQueue)?;
+            .map_err(HookError::ThreadSpawn)?;
 
         let thread_id = match ready_receiver.recv() {
             Ok(Ok(thread_id)) => thread_id,
@@ -73,6 +80,8 @@ impl KeyboardHook {
             }
         };
 
+        INTERCEPTION_ENABLED.store(true, Ordering::Release);
+
         Ok((
             Self {
                 thread_id,
@@ -82,7 +91,21 @@ impl KeyboardHook {
         ))
     }
 
+    #[must_use]
+    pub fn interception_enabled(&self) -> bool {
+        INTERCEPTION_ENABLED.load(Ordering::Acquire)
+    }
+
+    pub fn set_interception_enabled(&self, enabled: bool) {
+        INTERCEPTION_ENABLED.store(enabled, Ordering::Release);
+    }
+
+    pub fn emergency_disable(&self) {
+        self.set_interception_enabled(false);
+    }
+
     pub fn stop(mut self) -> Result<(), HookError> {
+        self.emergency_disable();
         self.request_stop()?;
         self.join_thread()
     }
@@ -92,11 +115,9 @@ impl KeyboardHook {
             return Ok(());
         }
 
-        let posted = unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0) };
-        if posted == 0 {
-            Err(HookError::Stop(io::Error::last_os_error()))
-        } else {
-            Ok(())
+        unsafe {
+            PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
+                .map_err(HookError::Stop)
         }
     }
 
@@ -114,6 +135,7 @@ impl KeyboardHook {
 
 impl Drop for KeyboardHook {
     fn drop(&mut self) {
+        self.emergency_disable();
         let _ = self.request_stop();
         let _ = self.join_thread();
     }
@@ -127,67 +149,60 @@ fn hook_thread(
     let mut message = MSG::default();
 
     unsafe {
-        PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_NOREMOVE);
+        PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
     }
 
-    let module = unsafe { GetModuleHandleW(ptr::null()) };
-    if module.is_null() {
-        let error = HookError::Install(io::Error::last_os_error());
-        let _ = ready_sender.send(Err(error));
-        return Ok(());
-    }
+    let module = match unsafe { GetModuleHandleW(None) } {
+        Ok(module) => module,
+        Err(error) => {
+            let _ = ready_sender.send(Err(HookError::Install(error)));
+            return Ok(());
+        }
+    };
 
-    let hook = unsafe {
+    let hook = match unsafe {
         SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(keyboard_hook_proc),
-            module.cast(),
+            Some(HINSTANCE(module.0)),
             0,
         )
+    } {
+        Ok(hook) => hook,
+        Err(error) => {
+            let _ = ready_sender.send(Err(HookError::Install(error)));
+            return Ok(());
+        }
     };
-    if hook.is_null() {
-        let error = HookError::Install(io::Error::last_os_error());
-        let _ = ready_sender.send(Err(error));
-        return Ok(());
-    }
 
     if !register_sender(event_sender) {
-        unsafe {
-            UnhookWindowsHookEx(hook);
-        }
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
         let _ = ready_sender.send(Err(HookError::AlreadyActive));
         return Ok(());
     }
 
     if ready_sender.send(Ok(thread_id)).is_err() {
         clear_sender();
-        unsafe {
-            UnhookWindowsHookEx(hook);
-        }
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
         return Ok(());
     }
 
     let loop_result = run_message_loop();
+    INTERCEPTION_ENABLED.store(false, Ordering::Release);
     clear_sender();
-    let unhooked = unsafe { UnhookWindowsHookEx(hook) };
+    let unhook_result = unsafe { UnhookWindowsHookEx(hook) };
 
-    if let Err(error) = loop_result {
-        return Err(error);
-    }
-    if unhooked == 0 {
-        return Err(HookError::Stop(io::Error::last_os_error()));
-    }
-
-    Ok(())
+    loop_result?;
+    unhook_result.map_err(HookError::Stop)
 }
 
 fn run_message_loop() -> Result<(), HookError> {
     let mut message = MSG::default();
 
     loop {
-        let result = unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) };
-        match result {
-            -1 => return Err(HookError::MessageQueue(io::Error::last_os_error())),
+        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        match result.0 {
+            -1 => return Err(HookError::MessageLoop(WindowsError::from_win32())),
             0 => return Ok(()),
             _ => {}
         }
@@ -234,30 +249,30 @@ fn dispatch_event(event: PhysicalKeyEvent) -> bool {
 
 unsafe extern "system" fn keyboard_hook_proc(
     code: i32,
-    wparam: usize,
-    lparam: isize,
-) -> isize {
-    if code >= 0 {
-        let state = match u32::try_from(wparam).ok() {
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && INTERCEPTION_ENABLED.load(Ordering::Acquire) {
+        let state = match u32::try_from(wparam.0).ok() {
             Some(WM_KEYDOWN | WM_SYSKEYDOWN) => Some(KeyState::Pressed),
             Some(WM_KEYUP | WM_SYSKEYUP) => Some(KeyState::Released),
             _ => None,
         };
 
         if let Some(state) = state {
-            let keyboard = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
+            let keyboard = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
             let event = PhysicalKeyEvent::new(
                 keyboard.vkCode,
                 keyboard.scanCode,
-                keyboard.flags & LLKHF_EXTENDED != 0,
+                keyboard.flags.0 & LLKHF_EXTENDED.0 != 0,
                 state,
             );
 
             if map_numpad_key(event).is_some() && dispatch_event(event) {
-                return 1;
+                return LRESULT(1);
             }
         }
     }
 
-    unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
