@@ -202,7 +202,7 @@ fn run_message_loop() -> Result<(), HookError> {
     loop {
         let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
         match result.0 {
-            -1 => return Err(HookError::MessageLoop(WindowsError::from_win32())),
+            -1 => return Err(HookError::MessageLoop(WindowsError::from_thread())),
             0 => return Ok(()),
             _ => {}
         }
