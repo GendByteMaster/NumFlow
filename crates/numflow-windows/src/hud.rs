@@ -38,7 +38,7 @@ pub fn recommended_hud_position(width: u32, height: u32, margin: u32) -> Option<
     let margin = i32::try_from(margin).ok()?;
 
     let mut cursor = POINT::default();
-    unsafe { GetCursorPos(&mut cursor).ok()? };
+    unsafe { GetCursorPos(&raw mut cursor).ok()? };
 
     let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
     let mut monitor_info = MONITORINFO {
@@ -46,7 +46,7 @@ pub fn recommended_hud_position(width: u32, height: u32, margin: u32) -> Option<
         ..MONITORINFO::default()
     };
 
-    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+    if !unsafe { GetMonitorInfoW(monitor, &raw mut monitor_info) }.as_bool() {
         return None;
     }
 
