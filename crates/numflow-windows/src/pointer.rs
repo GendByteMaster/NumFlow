@@ -2,9 +2,9 @@ use std::mem::size_of;
 
 use numflow_core::{MouseButton, PointerBackend};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEINPUT, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, SendInput,
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput,
 };
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -222,7 +222,11 @@ mod tests {
     #[test]
     fn click_sequences_use_matching_button_flags() {
         let cases = [
-            (MouseButton::Left, MOUSEEVENTF_LEFTDOWN.0, MOUSEEVENTF_LEFTUP.0),
+            (
+                MouseButton::Left,
+                MOUSEEVENTF_LEFTDOWN.0,
+                MOUSEEVENTF_LEFTUP.0,
+            ),
             (
                 MouseButton::Right,
                 MOUSEEVENTF_RIGHTDOWN.0,
