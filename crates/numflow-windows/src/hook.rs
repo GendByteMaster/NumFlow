@@ -14,8 +14,8 @@ use windows::{
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::WindowsAndMessaging::{
             CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
-            PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
-            WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+            WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
         },
     },
     core::Error as WindowsError,
@@ -247,11 +247,7 @@ fn dispatch_event(event: PhysicalKeyEvent) -> bool {
     }
 }
 
-unsafe extern "system" fn keyboard_hook_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && INTERCEPTION_ENABLED.load(Ordering::Acquire) {
         let state = match u32::try_from(wparam.0).ok() {
             Some(WM_KEYDOWN | WM_SYSKEYDOWN) => Some(KeyState::Pressed),
