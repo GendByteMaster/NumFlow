@@ -49,4 +49,10 @@ Planned capabilities include configurable pointer speed and acceleration, precis
 - `SendInput` for pointer movement and mouse button events
 - Serde-based persistent configuration
 
+## Windows input limitation
+
+NumFlow uses the Win32 `SendInput` API for simulated pointer movement and mouse-button events. Windows User Interface Privilege Isolation (UIPI) permits input injection only into applications running at an equal or lower integrity level. A normally launched NumFlow process therefore might not control an elevated/admin application.
+
+`SendInput` does not reliably report that UIPI was the specific reason an injection was blocked, so this limitation must not be treated as a random pointer-backend failure. NumFlow should run without elevation by default; elevation is not a general workaround and is outside the v0.1 default design.
+
 See the project roadmap issue for the full development plan.
