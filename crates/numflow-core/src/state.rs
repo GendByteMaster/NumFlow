@@ -40,6 +40,11 @@ impl ControllerState {
         self.held_button
     }
 
+    #[must_use]
+    pub const fn is_dragging(&self) -> bool {
+        self.held_button.is_some()
+    }
+
     pub fn apply(&mut self, action: InputAction) -> Vec<CoreEffect> {
         match action {
             InputAction::Move(direction) if self.enabled => {
@@ -75,6 +80,21 @@ impl ControllerState {
         }
     }
 
+    /// Transitions the controller into a safe stopped state.
+    ///
+    /// Any physically-held button is released before the disabled state is emitted. Calling this
+    /// method repeatedly is safe and produces no duplicate release or state-change effects.
+    pub fn shutdown(&mut self) -> Vec<CoreEffect> {
+        let mut effects = self.release_held_button();
+
+        if self.enabled {
+            self.enabled = false;
+            effects.push(CoreEffect::State(StateChange::Enabled(false)));
+        }
+
+        effects
+    }
+
     const fn can_click(self) -> bool {
         self.enabled && self.held_button.is_none()
     }
@@ -101,15 +121,12 @@ impl ControllerState {
             return Vec::new();
         }
 
-        let mut effects = Vec::with_capacity(2);
-
         if !enabled {
-            effects.extend(self.release_held_button());
+            return self.shutdown();
         }
 
-        self.enabled = enabled;
-        effects.push(CoreEffect::State(StateChange::Enabled(enabled)));
-        effects
+        self.enabled = true;
+        vec![CoreEffect::State(StateChange::Enabled(true))]
     }
 
     fn set_precision(&mut self, precision: bool) -> Vec<CoreEffect> {
@@ -135,6 +152,7 @@ mod tests {
 
         assert!(!state.is_enabled());
         assert!(!state.is_precision_enabled());
+        assert!(!state.is_dragging());
         assert_eq!(state.selected_button(), MouseButton::Left);
         assert_eq!(state.held_button(), None);
     }
@@ -188,6 +206,7 @@ mod tests {
                 MouseButton::Right
             ))]
         );
+        assert!(state.is_dragging());
         assert_eq!(state.held_button(), Some(MouseButton::Right));
 
         state.apply(InputAction::SelectButton(MouseButton::Middle));
@@ -198,6 +217,7 @@ mod tests {
                 MouseButton::Right
             ))]
         );
+        assert!(!state.is_dragging());
         assert_eq!(state.held_button(), None);
         assert_eq!(state.selected_button(), MouseButton::Middle);
     }
@@ -212,6 +232,15 @@ mod tests {
     }
 
     #[test]
+    fn release_without_a_held_button_is_a_no_op() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+
+        assert!(state.apply(InputAction::Release).is_empty());
+        assert!(!state.is_dragging());
+    }
+
+    #[test]
     fn click_is_suppressed_during_drag_but_movement_is_allowed() {
         let mut state = ControllerState::default();
         state.apply(InputAction::SetEnabled(true));
@@ -222,6 +251,82 @@ mod tests {
         assert_eq!(
             state.apply(InputAction::Move(Direction::Right)),
             vec![CoreEffect::Pointer(PointerEffect::Move(Direction::Right))]
+        );
+    }
+
+    #[test]
+    fn changing_selection_during_drag_does_not_change_the_held_button() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+        state.apply(InputAction::SelectButton(MouseButton::Right));
+        state.apply(InputAction::Hold);
+
+        assert_eq!(
+            state.apply(InputAction::SelectButton(MouseButton::Middle)),
+            vec![CoreEffect::State(StateChange::SelectedButton(
+                MouseButton::Middle
+            ))]
+        );
+        assert_eq!(state.selected_button(), MouseButton::Middle);
+        assert_eq!(state.held_button(), Some(MouseButton::Right));
+
+        assert_eq!(
+            state.apply(InputAction::Release),
+            vec![CoreEffect::Pointer(PointerEffect::ButtonUp(
+                MouseButton::Right
+            ))]
+        );
+    }
+
+    #[test]
+    fn rapid_selection_drag_release_and_click_stay_synchronized() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+
+        state.apply(InputAction::SelectButton(MouseButton::Right));
+        assert_eq!(
+            state.apply(InputAction::Hold),
+            vec![CoreEffect::Pointer(PointerEffect::ButtonDown(
+                MouseButton::Right
+            ))]
+        );
+
+        state.apply(InputAction::SelectButton(MouseButton::Middle));
+        assert!(state.apply(InputAction::Click).is_empty());
+        assert_eq!(
+            state.apply(InputAction::Release),
+            vec![CoreEffect::Pointer(PointerEffect::ButtonUp(
+                MouseButton::Right
+            ))]
+        );
+        assert_eq!(
+            state.apply(InputAction::Click),
+            vec![CoreEffect::Pointer(PointerEffect::Click {
+                button: MouseButton::Middle,
+                kind: ClickKind::Single,
+            })]
+        );
+        assert!(!state.is_dragging());
+        assert_eq!(state.selected_button(), MouseButton::Middle);
+        assert_eq!(state.held_button(), None);
+    }
+
+    #[test]
+    fn rapid_button_selection_uses_the_latest_button_for_clicks() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+
+        state.apply(InputAction::SelectButton(MouseButton::Right));
+        state.apply(InputAction::SelectButton(MouseButton::Middle));
+        state.apply(InputAction::SelectButton(MouseButton::Left));
+        state.apply(InputAction::SelectButton(MouseButton::Right));
+
+        assert_eq!(
+            state.apply(InputAction::DoubleClick),
+            vec![CoreEffect::Pointer(PointerEffect::Click {
+                button: MouseButton::Right,
+                kind: ClickKind::Double,
+            })]
         );
     }
 
@@ -240,7 +345,28 @@ mod tests {
             ]
         );
         assert!(!state.is_enabled());
+        assert!(!state.is_dragging());
         assert_eq!(state.held_button(), None);
+    }
+
+    #[test]
+    fn shutdown_releases_held_button_before_disabling_and_is_idempotent() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+        state.apply(InputAction::SelectButton(MouseButton::Middle));
+        state.apply(InputAction::Hold);
+
+        assert_eq!(
+            state.shutdown(),
+            vec![
+                CoreEffect::Pointer(PointerEffect::ButtonUp(MouseButton::Middle)),
+                CoreEffect::State(StateChange::Enabled(false)),
+            ]
+        );
+        assert!(!state.is_enabled());
+        assert!(!state.is_dragging());
+        assert_eq!(state.held_button(), None);
+        assert!(state.shutdown().is_empty());
     }
 
     #[test]
