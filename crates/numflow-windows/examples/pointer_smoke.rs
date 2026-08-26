@@ -37,7 +37,9 @@ fn run() -> Result<(), String> {
             let dx = parse_i32(args.next(), "dx")?;
             let dy = parse_i32(args.next(), "dy")?;
             ensure_no_extra_args(args)?;
-            pointer.move_relative(dx, dy).map_err(|error| error.to_string())
+            pointer
+                .move_relative(dx, dy)
+                .map_err(|error| error.to_string())
         }
         "click" => {
             let button = parse_button(args.next().as_deref())?;
