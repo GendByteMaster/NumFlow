@@ -52,10 +52,27 @@ pub struct KeyboardHook {
 }
 
 impl KeyboardHook {
+    /// Starts the global low-level keyboard hook with the default event queue capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
+    /// installed, another NumFlow hook is already active, or the hook thread exits before setup
+    /// completes.
     pub fn start() -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
         Self::start_with_capacity(DEFAULT_QUEUE_CAPACITY)
     }
 
+    /// Starts the global low-level keyboard hook with a bounded event queue.
+    ///
+    /// A zero capacity request is normalized to a capacity of one so the hook callback never uses
+    /// a rendezvous channel that could block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
+    /// installed, another NumFlow hook is already active, or the hook thread exits before setup
+    /// completes.
     pub fn start_with_capacity(
         queue_capacity: usize,
     ) -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
@@ -65,7 +82,7 @@ impl KeyboardHook {
 
         let join = thread::Builder::new()
             .name("numflow-keyboard-hook".to_owned())
-            .spawn(move || hook_thread(event_sender, ready_sender))
+            .spawn(move || hook_thread(event_sender, &ready_sender))
             .map_err(HookError::ThreadSpawn)?;
 
         let thread_id = match ready_receiver.recv() {
@@ -104,6 +121,12 @@ impl KeyboardHook {
         self.set_interception_enabled(false);
     }
 
+    /// Disables interception, requests message-loop shutdown, and joins the hook thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HookError`] if posting the shutdown message fails, unhooking fails, the message
+    /// loop reports a Win32 error, or the hook thread panics.
     pub fn stop(mut self) -> Result<(), HookError> {
         self.emergency_disable();
         self.request_stop()?;
@@ -143,14 +166,12 @@ impl Drop for KeyboardHook {
 
 fn hook_thread(
     event_sender: SyncSender<PhysicalKeyEvent>,
-    ready_sender: SyncSender<Result<u32, HookError>>,
+    ready_sender: &SyncSender<Result<u32, HookError>>,
 ) -> Result<(), HookError> {
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut message = MSG::default();
 
-    unsafe {
-        PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE);
-    }
+    let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
 
     let module = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => module,
@@ -200,7 +221,7 @@ fn run_message_loop() -> Result<(), HookError> {
     let mut message = MSG::default();
 
     loop {
-        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
         match result.0 {
             -1 => return Err(HookError::MessageLoop(WindowsError::from_thread())),
             0 => return Ok(()),
