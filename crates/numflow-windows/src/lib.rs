@@ -14,6 +14,8 @@ mod instance;
 mod pointer;
 #[cfg(windows)]
 mod startup;
+#[cfg(windows)]
+mod window;
 
 #[cfg(windows)]
 pub use hook::{HookError, KeyboardHook};
@@ -25,3 +27,5 @@ pub use instance::{SingleInstanceError, SingleInstanceGuard};
 pub use pointer::{PointerError, WindowsPointer};
 #[cfg(windows)]
 pub use startup::{StartupError, StartupRegistration};
+#[cfg(windows)]
+pub use window::{WindowActivationError, show_numflow_window};
