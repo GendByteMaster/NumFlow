@@ -1,4 +1,4 @@
-use crate::{error::AppError, AppWindow};
+use crate::{AppWindow, error::AppError};
 
 pub fn run() -> Result<(), AppError> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting NumFlow");
