@@ -57,7 +57,7 @@ impl KeyboardHook {
     /// # Errors
     ///
     /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
-    /// installed, another NumFlow hook is already active, or the hook thread exits before setup
+    /// installed, another `NumFlow` hook is already active, or the hook thread exits before setup
     /// completes.
     pub fn start() -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
         Self::start_with_capacity(DEFAULT_QUEUE_CAPACITY)
@@ -71,7 +71,7 @@ impl KeyboardHook {
     /// # Errors
     ///
     /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
-    /// installed, another NumFlow hook is already active, or the hook thread exits before setup
+    /// installed, another `NumFlow` hook is already active, or the hook thread exits before setup
     /// completes.
     pub fn start_with_capacity(
         queue_capacity: usize,
