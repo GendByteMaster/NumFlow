@@ -144,7 +144,7 @@ mod tests {
     fn reset_clears_pressed_state() {
         let bindings = Bindings::default();
         let mut normalizer = KeyboardEventNormalizer::default();
-        normalizer.process(event(0x4C, KeyState::Pressed), &bindings);
+        let _ = normalizer.process(event(0x4C, KeyState::Pressed), &bindings);
         assert!(normalizer.is_pressed(NumpadKey::Num5));
 
         normalizer.reset();
