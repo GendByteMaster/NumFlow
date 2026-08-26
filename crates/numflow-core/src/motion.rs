@@ -34,8 +34,8 @@ impl MotionConfig {
     pub fn sanitized(self) -> Self {
         let defaults = Self::default();
         let base_speed = sanitize_f64(self.base_speed, defaults.base_speed, MIN_SPEED, MAX_SPEED);
-        let max_speed = sanitize_f64(self.max_speed, defaults.max_speed, MIN_SPEED, MAX_SPEED)
-            .max(base_speed);
+        let max_speed =
+            sanitize_f64(self.max_speed, defaults.max_speed, MIN_SPEED, MAX_SPEED).max(base_speed);
 
         Self {
             base_speed,
@@ -263,9 +263,7 @@ fn integrated_distance(start: f64, end: f64, config: MotionConfig) -> f64 {
 
     let accelerating_distance = if accelerating_end > accelerating_start {
         config.base_speed * (accelerating_end - accelerating_start)
-            + 0.5
-                * config.acceleration
-                * (accelerating_end.powi(2) - accelerating_start.powi(2))
+            + 0.5 * config.acceleration * (accelerating_end.powi(2) - accelerating_start.powi(2))
     } else {
         0.0
     };
