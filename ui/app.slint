@@ -1,0 +1,159 @@
+import { Button, Slider, Switch } from "std-widgets.slint";
+
+component KeyTile inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+
+    min-width: 76px;
+    min-height: 58px;
+    border-radius: 14px;
+    border-width: active ? 2px : 1px;
+    border-color: active ? #0a84ff : #d6dbe3;
+    background: active ? #e9f3ff : #ffffff;
+
+    Text {
+        text: root.label;
+        color: #1d1d1f;
+        font-size: 16px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "NumFlow";
+    width: 560px;
+    height: 720px;
+    background: #f7f8fa;
+
+    in-out property <bool> numflow-enabled: true;
+    in-out property <float> pointer-speed: 48;
+    in-out property <float> pointer-acceleration: 35;
+    in-out property <bool> precision-enabled: true;
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 18px;
+
+        HorizontalLayout {
+            spacing: 12px;
+
+            VerticalLayout {
+                spacing: 4px;
+
+                Text {
+                    text: "NumFlow";
+                    color: #1d1d1f;
+                    font-size: 28px;
+                    font-weight: 700;
+                }
+
+                Text {
+                    text: "Control the pointer with your NumPad";
+                    color: #60646c;
+                    font-size: 14px;
+                }
+            }
+
+            Switch {
+                text: root.numflow-enabled ? "Enabled" : "Paused";
+                checked <=> root.numflow-enabled;
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #dde1e7;
+        }
+
+        Text {
+            text: "NumPad";
+            color: #1d1d1f;
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        VerticalLayout {
+            spacing: 8px;
+            cross-axis-alignment: center;
+
+            HorizontalLayout {
+                spacing: 8px;
+                KeyTile { label: "↖ 7"; }
+                KeyTile { label: "↑ 8"; }
+                KeyTile { label: "9 ↗"; }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                KeyTile { label: "← 4"; }
+                KeyTile { label: "● 5"; active: true; }
+                KeyTile { label: "6 →"; }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                KeyTile { label: "↙ 1"; }
+                KeyTile { label: "↓ 2"; }
+                KeyTile { label: "3 ↘"; }
+            }
+        }
+
+        Text {
+            text: "Active button";
+            color: #1d1d1f;
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Button { text: "Left"; checkable: true; checked: true; }
+            Button { text: "Right"; checkable: true; }
+            Button { text: "Middle"; checkable: true; }
+        }
+
+        Text {
+            text: "Pointer";
+            color: #1d1d1f;
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        VerticalLayout {
+            spacing: 8px;
+
+            Text { text: "Speed"; color: #3f434a; }
+            Slider {
+                minimum: 1;
+                maximum: 100;
+                step: 1;
+                value <=> root.pointer-speed;
+            }
+
+            Text { text: "Acceleration"; color: #3f434a; }
+            Slider {
+                minimum: 0;
+                maximum: 100;
+                step: 1;
+                value <=> root.pointer-acceleration;
+            }
+        }
+
+        Switch {
+            text: "Precision mode";
+            checked <=> root.precision-enabled;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        Text {
+            text: root.numflow-enabled ? "● Enabled · Left button selected" : "○ Paused";
+            color: #60646c;
+            font-size: 13px;
+        }
+    }
+}

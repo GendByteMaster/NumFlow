@@ -1,0 +1,30 @@
+[package]
+name = "numflow"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Keyboard-driven pointer control built with Rust and Slint"
+license = "MIT"
+repository = "https://github.com/GendByteMaster/NumFlow"
+build = "build.rs"
+
+[dependencies]
+slint = "1.17.1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[build-dependencies]
+slint-build = "1.17.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
