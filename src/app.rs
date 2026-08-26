@@ -190,7 +190,7 @@ fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     }
 }
 
-fn connect_ui(
+fn connect_pointer_controls(
     window: &AppWindow,
     settings: &SharedUiSettings,
     hud: &SharedHud,
@@ -246,7 +246,14 @@ fn connect_ui(
             persist_configuration(&settings, &store);
         });
     }
+}
 
+fn connect_preferences(
+    window: &AppWindow,
+    settings: &SharedUiSettings,
+    hud: &SharedHud,
+    store: &SharedConfigStore,
+) {
     {
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
@@ -296,7 +303,6 @@ fn connect_ui(
         let hud = Rc::clone(hud);
         let store = Rc::clone(store);
         let weak_window = window.as_weak();
-
         window.on_reset_defaults(move || {
             let (effects, held_button) = {
                 let mut settings = settings.borrow_mut();
@@ -318,6 +324,16 @@ fn connect_ui(
             persist_configuration(&settings, &store);
         });
     }
+}
+
+fn connect_ui(
+    window: &AppWindow,
+    settings: &SharedUiSettings,
+    hud: &SharedHud,
+    store: &SharedConfigStore,
+) {
+    connect_pointer_controls(window, settings, hud, store);
+    connect_preferences(window, settings, hud, store);
 }
 
 pub fn run() -> Result<(), AppError> {
