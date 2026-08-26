@@ -1,3 +1,5 @@
+use slint::ComponentHandle;
+
 use crate::{AppWindow, error::AppError};
 
 pub fn run() -> Result<(), AppError> {
