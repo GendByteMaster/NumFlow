@@ -1,0 +1,37 @@
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/numflow-icon.svg");
+    title: "NumFlow";
+    tooltip: "NumFlow · Running in background";
+
+    callback open-settings();
+    callback exit-requested();
+
+    clicked => {
+        root.open-settings();
+    }
+
+    Menu {
+        MenuItem {
+            title: "Open NumFlow";
+            activated => {
+                root.open-settings();
+            }
+        }
+
+        MenuSeparator {}
+
+        MenuItem {
+            title: "Running in background";
+            enabled: false;
+        }
+
+        MenuSeparator {}
+
+        MenuItem {
+            title: "Exit NumFlow";
+            activated => {
+                root.exit-requested();
+            }
+        }
+    }
+}
