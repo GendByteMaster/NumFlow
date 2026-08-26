@@ -22,11 +22,11 @@ pub struct SingleInstanceGuard {
 }
 
 impl SingleInstanceGuard {
-    /// Acquires the per-session NumFlow single-instance mutex.
+    /// Acquires the per-session `NumFlow` single-instance mutex.
     ///
     /// # Errors
     ///
-    /// Returns [`SingleInstanceError::AlreadyRunning`] when another NumFlow process in the same
+    /// Returns [`SingleInstanceError::AlreadyRunning`] when another `NumFlow` process in the same
     /// Windows session already owns a handle to the mutex. Other Win32 failures are returned as
     /// [`SingleInstanceError::Create`].
     pub fn acquire() -> Result<Self, SingleInstanceError> {
