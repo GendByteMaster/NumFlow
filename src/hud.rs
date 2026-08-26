@@ -151,7 +151,7 @@ impl HudController {
             return;
         }
 
-        self.present(presentation);
+        self.present(&presentation);
     }
 
     fn show_dragging(&mut self, button: MouseButton) {
@@ -165,7 +165,7 @@ impl HudController {
         self.hide_window();
     }
 
-    fn present(&mut self, presentation: HudPresentation) {
+    fn present(&mut self, presentation: &HudPresentation) {
         self.window.set_headline(presentation.headline.into());
         self.window.set_detail(presentation.detail.into());
         self.window.set_icon_kind(presentation.icon);
