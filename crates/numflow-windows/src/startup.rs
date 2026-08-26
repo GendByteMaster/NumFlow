@@ -39,7 +39,7 @@ impl StartupRegistration {
         }
     }
 
-    /// Checks whether NumFlow currently has a per-user Windows startup registration.
+    /// Checks whether `NumFlow` currently has a per-user Windows startup registration.
     ///
     /// # Errors
     ///
@@ -54,7 +54,7 @@ impl StartupRegistration {
                 RRF_RT_REG_SZ,
                 None,
                 None,
-                Some(&mut size),
+                Some(&raw mut size),
             )
         };
 
@@ -129,9 +129,11 @@ mod tests {
     #[test]
     fn startup_command_quotes_executable_and_is_nul_terminated() {
         let bytes = startup_command_bytes(Path::new(r"C:\Program Files\NumFlow\numflow.exe"));
-        let wide = bytes
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        let (chunks, remainder) = bytes.as_chunks::<2>();
+        assert!(remainder.is_empty());
+        let wide = chunks
+            .iter()
+            .map(|chunk| u16::from_le_bytes(*chunk))
             .collect::<Vec<_>>();
         let decoded = String::from_utf16(&wide[..wide.len() - 1]).expect("valid UTF-16");
 
