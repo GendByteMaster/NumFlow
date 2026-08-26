@@ -37,26 +37,30 @@ fn run() -> Result<(), String> {
             let dx = parse_i32(args.next(), "dx")?;
             let dy = parse_i32(args.next(), "dy")?;
             ensure_no_extra_args(args)?;
-            pointer.move_relative(dx, dy).map_err(pointer_error)
+            pointer.move_relative(dx, dy).map_err(|error| error.to_string())
         }
         "click" => {
-            let button = parse_button(args.next())?;
+            let button = parse_button(args.next().as_deref())?;
             ensure_no_extra_args(args)?;
-            pointer.click(button).map_err(pointer_error)
+            pointer.click(button).map_err(|error| error.to_string())
         }
         "double-click" => {
-            let button = parse_button(args.next())?;
+            let button = parse_button(args.next().as_deref())?;
             ensure_no_extra_args(args)?;
-            pointer.double_click(button).map_err(pointer_error)
+            pointer
+                .double_click(button)
+                .map_err(|error| error.to_string())
         }
         "hold" => {
-            let button = parse_button(args.next())?;
+            let button = parse_button(args.next().as_deref())?;
             let milliseconds = parse_u64(args.next(), "milliseconds")?;
             ensure_no_extra_args(args)?;
 
-            pointer.button_down(button).map_err(pointer_error)?;
+            pointer
+                .button_down(button)
+                .map_err(|error| error.to_string())?;
             thread::sleep(Duration::from_millis(milliseconds));
-            pointer.button_up(button).map_err(pointer_error)
+            pointer.button_up(button).map_err(|error| error.to_string())
         }
         _ => Err(format!(
             "unknown command {command:?}; expected move, click, double-click, or hold"
@@ -65,8 +69,8 @@ fn run() -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn parse_button(value: Option<String>) -> Result<MouseButton, String> {
-    match value.as_deref() {
+fn parse_button(value: Option<&str>) -> Result<MouseButton, String> {
+    match value {
         Some("left") => Ok(MouseButton::Left),
         Some("right") => Ok(MouseButton::Right),
         Some("middle") => Ok(MouseButton::Middle),
@@ -99,11 +103,6 @@ fn ensure_no_extra_args(mut args: impl Iterator<Item = String>) -> Result<(), St
         Some(extra) => Err(format!("unexpected extra argument {extra:?}")),
         None => Ok(()),
     }
-}
-
-#[cfg(windows)]
-fn pointer_error(error: numflow_windows::PointerError) -> String {
-    error.to_string()
 }
 
 #[cfg(windows)]
