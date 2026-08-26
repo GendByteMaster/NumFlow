@@ -1,159 +1,432 @@
-import { Button, Slider, Switch } from "std-widgets.slint";
+import { Button, Palette, Slider, Switch } from "std-widgets.slint";
+
+export enum MouseButtonMode {
+    left,
+    right,
+    middle,
+}
+
+component SurfaceCard inherits Rectangle {
+    background: Palette.alternate-background;
+    border-width: 1px;
+    border-color: Palette.border;
+    border-radius: 16px;
+}
+
+component StatusItem inherits Rectangle {
+    in property <image> icon-source;
+    in property <string> title;
+    in property <string> value;
+
+    background: transparent;
+    min-height: 58px;
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 10px;
+
+        Image {
+            source: root.icon-source;
+            width: 32px;
+            height: 32px;
+            image-fit: contain;
+            accessible-role: none;
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+
+            Text {
+                text: root.title;
+                color: Palette.alternate-foreground;
+                font-size: 12px;
+            }
+
+            Text {
+                text: root.value;
+                color: Palette.foreground;
+                font-size: 15px;
+                font-weight: 600;
+            }
+        }
+    }
+}
 
 component KeyTile inherits Rectangle {
-    in property <string> label;
+    in property <string> key-label;
+    in property <string> action-label;
     in property <bool> active: false;
 
-    min-width: 76px;
-    min-height: 58px;
-    border-radius: 14px;
+    min-width: 88px;
+    min-height: 52px;
+    border-radius: 12px;
     border-width: active ? 2px : 1px;
-    border-color: active ? #0a84ff : #d6dbe3;
-    background: active ? #e9f3ff : #ffffff;
+    border-color: active ? Palette.accent-background : Palette.border;
+    background: active ? Palette.accent-background : Palette.control-background;
 
-    Text {
-        text: root.label;
-        color: #1d1d1f;
-        font-size: 16px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    VerticalLayout {
+        padding: 6px;
+        spacing: 1px;
+
+        Text {
+            text: root.key-label;
+            color: active ? Palette.accent-foreground : Palette.control-foreground;
+            font-size: 16px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: active ? "Active · " + root.action-label : root.action-label;
+            color: active ? Palette.accent-foreground : Palette.alternate-foreground;
+            font-size: 10px;
+            horizontal-alignment: center;
+        }
     }
 }
 
 export component AppWindow inherits Window {
     title: "NumFlow";
-    width: 560px;
-    height: 720px;
-    background: #f7f8fa;
+    width: 620px;
+    height: 790px;
+    background: Palette.background;
 
-    in-out property <bool> numflow-enabled: true;
-    in-out property <float> pointer-speed: 48;
-    in-out property <float> pointer-acceleration: 35;
-    in-out property <bool> precision-enabled: true;
+    in-out property <bool> numflow-enabled: false;
+    in-out property <float> pointer-speed: 180;
+    in-out property <float> pointer-acceleration: 900;
+    in-out property <bool> precision-enabled: false;
+    in-out property <MouseButtonMode> active-button: MouseButtonMode.left;
+    in-out property <string> active-key: "";
+
+    callback enabled-toggled(bool);
+    callback mouse-button-changed(MouseButtonMode);
+    callback precision-toggled(bool);
+    callback speed-changed(float);
+    callback acceleration-changed(float);
+    callback reset-defaults();
+
+    private property <string> active-button-label:
+        root.active-button == MouseButtonMode.left ? "Left" :
+        root.active-button == MouseButtonMode.right ? "Right" : "Middle";
+
+    private property <image> active-button-icon:
+        root.active-button == MouseButtonMode.left
+            ? @image-url("../assets/icons/numflow/mouse-left.svg")
+            : root.active-button == MouseButtonMode.right
+                ? @image-url("../assets/icons/numflow/mouse-right.svg")
+                : @image-url("../assets/icons/numflow/mouse-middle.svg");
 
     VerticalLayout {
-        padding: 28px;
-        spacing: 18px;
+        padding: 22px;
+        spacing: 12px;
 
         HorizontalLayout {
+            min-height: 50px;
             spacing: 12px;
 
+            Image {
+                source: @image-url("../assets/numflow-icon.svg");
+                width: 38px;
+                height: 38px;
+                image-fit: contain;
+                accessible-role: none;
+            }
+
             VerticalLayout {
-                spacing: 4px;
+                spacing: 2px;
 
                 Text {
                     text: "NumFlow";
-                    color: #1d1d1f;
-                    font-size: 28px;
+                    color: Palette.foreground;
+                    font-size: 26px;
                     font-weight: 700;
                 }
 
                 Text {
-                    text: "Control the pointer with your NumPad";
-                    color: #60646c;
-                    font-size: 14px;
+                    text: "Precise pointer control from your keyboard.";
+                    color: Palette.alternate-foreground;
+                    font-size: 12px;
                 }
             }
 
+            Rectangle {
+                horizontal-stretch: 1;
+                background: transparent;
+            }
+
             Switch {
-                text: root.numflow-enabled ? "Enabled" : "Paused";
+                text: root.numflow-enabled ? "On" : "Off";
                 checked <=> root.numflow-enabled;
+                toggled => {
+                    root.enabled-toggled(self.checked);
+                }
             }
         }
 
-        Rectangle {
-            height: 1px;
-            background: #dde1e7;
-        }
-
-        Text {
-            text: "NumPad";
-            color: #1d1d1f;
-            font-size: 17px;
-            font-weight: 600;
-        }
-
-        VerticalLayout {
-            spacing: 8px;
-            cross-axis-alignment: center;
+        SurfaceCard {
+            height: 76px;
 
             HorizontalLayout {
-                spacing: 8px;
-                KeyTile { label: "↖ 7"; }
-                KeyTile { label: "↑ 8"; }
-                KeyTile { label: "9 ↗"; }
-            }
+                padding: 7px;
+                spacing: 4px;
 
-            HorizontalLayout {
-                spacing: 8px;
-                KeyTile { label: "← 4"; }
-                KeyTile { label: "● 5"; active: true; }
-                KeyTile { label: "6 →"; }
-            }
+                StatusItem {
+                    horizontal-stretch: 1;
+                    icon-source: root.numflow-enabled
+                        ? @image-url("../assets/icons/numflow/power-on.svg")
+                        : @image-url("../assets/icons/numflow/power-off.svg");
+                    title: "NumFlow";
+                    value: root.numflow-enabled ? "On" : "Off";
+                }
 
-            HorizontalLayout {
-                spacing: 8px;
-                KeyTile { label: "↙ 1"; }
-                KeyTile { label: "↓ 2"; }
-                KeyTile { label: "3 ↘"; }
+                Rectangle {
+                    width: 1px;
+                    background: Palette.border;
+                }
+
+                StatusItem {
+                    horizontal-stretch: 1;
+                    icon-source: root.active-button-icon;
+                    title: "Mouse button";
+                    value: root.active-button-label;
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: Palette.border;
+                }
+
+                StatusItem {
+                    horizontal-stretch: 1;
+                    icon-source: @image-url("../assets/icons/numflow/precision-mode.svg");
+                    title: "Precision";
+                    value: root.precision-enabled ? "On" : "Off";
+                }
             }
         }
 
-        Text {
-            text: "Active button";
-            color: #1d1d1f;
-            font-size: 17px;
-            font-weight: 600;
+        SurfaceCard {
+            height: 224px;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "NumPad";
+                    color: Palette.foreground;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    KeyTile {
+                        key-label: "↖ 7";
+                        action-label: "Up-left";
+                        active: root.active-key == "7";
+                    }
+                    KeyTile {
+                        key-label: "↑ 8";
+                        action-label: "Up";
+                        active: root.active-key == "8";
+                    }
+                    KeyTile {
+                        key-label: "9 ↗";
+                        action-label: "Up-right";
+                        active: root.active-key == "9";
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    KeyTile {
+                        key-label: "← 4";
+                        action-label: "Left";
+                        active: root.active-key == "4";
+                    }
+                    KeyTile {
+                        key-label: "5";
+                        action-label: "Click";
+                        active: root.active-key == "5";
+                    }
+                    KeyTile {
+                        key-label: "6 →";
+                        action-label: "Right";
+                        active: root.active-key == "6";
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    KeyTile {
+                        key-label: "↙ 1";
+                        action-label: "Down-left";
+                        active: root.active-key == "1";
+                    }
+                    KeyTile {
+                        key-label: "↓ 2";
+                        action-label: "Down";
+                        active: root.active-key == "2";
+                    }
+                    KeyTile {
+                        key-label: "3 ↘";
+                        action-label: "Down-right";
+                        active: root.active-key == "3";
+                    }
+                }
+            }
+        }
+
+        SurfaceCard {
+            height: 100px;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 8px;
+
+                Text {
+                    text: "Mouse button · Selected: " + root.active-button-label;
+                    color: Palette.foreground;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Left";
+                        icon: @image-url("../assets/icons/numflow/mouse-left.svg");
+                        icon-size: 24px;
+                        primary: root.active-button == MouseButtonMode.left;
+                        clicked => {
+                            root.active-button = MouseButtonMode.left;
+                            root.mouse-button-changed(MouseButtonMode.left);
+                        }
+                    }
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Right";
+                        icon: @image-url("../assets/icons/numflow/mouse-right.svg");
+                        icon-size: 24px;
+                        primary: root.active-button == MouseButtonMode.right;
+                        clicked => {
+                            root.active-button = MouseButtonMode.right;
+                            root.mouse-button-changed(MouseButtonMode.right);
+                        }
+                    }
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Middle";
+                        icon: @image-url("../assets/icons/numflow/mouse-middle.svg");
+                        icon-size: 24px;
+                        primary: root.active-button == MouseButtonMode.middle;
+                        clicked => {
+                            root.active-button = MouseButtonMode.middle;
+                            root.mouse-button-changed(MouseButtonMode.middle);
+                        }
+                    }
+                }
+            }
+        }
+
+        SurfaceCard {
+            height: 198px;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 7px;
+
+                Text {
+                    text: "Pointer";
+                    color: Palette.foreground;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+
+                Text {
+                    text: "Speed · \{Math.round(root.pointer-speed)} px/s";
+                    color: Palette.alternate-foreground;
+                    font-size: 12px;
+                }
+
+                Slider {
+                    accessible-label: "Pointer speed";
+                    minimum: 40;
+                    maximum: 800;
+                    step: 10;
+                    value <=> root.pointer-speed;
+                    changed(value) => {
+                        root.speed-changed(value);
+                    }
+                }
+
+                Text {
+                    text: "Acceleration · \{Math.round(root.pointer-acceleration)} px/s²";
+                    color: Palette.alternate-foreground;
+                    font-size: 12px;
+                }
+
+                Slider {
+                    accessible-label: "Pointer acceleration";
+                    minimum: 0;
+                    maximum: 3000;
+                    step: 50;
+                    value <=> root.pointer-acceleration;
+                    changed(value) => {
+                        root.acceleration-changed(value);
+                    }
+                }
+
+                HorizontalLayout {
+                    min-height: 34px;
+                    spacing: 8px;
+
+                    Image {
+                        source: @image-url("../assets/icons/numflow/precision-mode.svg");
+                        width: 26px;
+                        height: 26px;
+                        image-fit: contain;
+                        accessible-role: none;
+                    }
+
+                    Switch {
+                        text: "Precision mode";
+                        checked <=> root.precision-enabled;
+                        toggled => {
+                            root.precision-toggled(self.checked);
+                        }
+                    }
+                }
+            }
         }
 
         HorizontalLayout {
-            spacing: 8px;
-            Button { text: "Left"; checkable: true; checked: true; }
-            Button { text: "Right"; checkable: true; }
-            Button { text: "Middle"; checkable: true; }
-        }
+            min-height: 36px;
+            spacing: 10px;
 
-        Text {
-            text: "Pointer";
-            color: #1d1d1f;
-            font-size: 17px;
-            font-weight: 600;
-        }
-
-        VerticalLayout {
-            spacing: 8px;
-
-            Text { text: "Speed"; color: #3f434a; }
-            Slider {
-                minimum: 1;
-                maximum: 100;
-                step: 1;
-                value <=> root.pointer-speed;
+            Text {
+                text: "Changes apply immediately";
+                color: Palette.alternate-foreground;
+                font-size: 11px;
+                vertical-alignment: center;
             }
 
-            Text { text: "Acceleration"; color: #3f434a; }
-            Slider {
-                minimum: 0;
-                maximum: 100;
-                step: 1;
-                value <=> root.pointer-acceleration;
+            Rectangle {
+                horizontal-stretch: 1;
+                background: transparent;
             }
-        }
 
-        Switch {
-            text: "Precision mode";
-            checked <=> root.precision-enabled;
-        }
-
-        Rectangle {
-            vertical-stretch: 1;
-        }
-
-        Text {
-            text: root.numflow-enabled ? "● Enabled · Left button selected" : "○ Paused";
-            color: #60646c;
-            font-size: 13px;
+            Button {
+                text: "Reset to defaults";
+                clicked => {
+                    root.reset-defaults();
+                }
+            }
         }
     }
 }
