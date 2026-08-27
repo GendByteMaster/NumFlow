@@ -211,7 +211,7 @@ NumFlow uses the Win32 `SendInput` API for simulated pointer movement, mouse-but
 
 ## Platform direction
 
-v0.1 is Windows-first. The core is intentionally kept platform-independent so Linux backends can be added later without rewriting the state machine, bindings, or motion engine.
+NumFlow v0.1 is Windows-first, and Windows is the only supported release platform today. **Linux and macOS support is planned for future versions.** The core is intentionally kept platform-independent so future platform backends can reuse the state machine, bindings, motion engine, and application architecture instead of duplicating the product logic.
 
 ## License
 
