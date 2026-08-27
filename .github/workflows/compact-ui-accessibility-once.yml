@@ -29,6 +29,15 @@ jobs:
       - name: Apply accessibility polish
         run: python scripts/apply_compact_ui_accessibility.py
 
+      - name: Fix Windows BOOL import
+        shell: pwsh
+        run: |
+          $path = "crates/numflow-windows/src/accessibility.rs"
+          $content = Get-Content $path -Raw
+          $content = $content.Replace("        Foundation::BOOL,`r`n", "")
+          $content = $content.Replace("    core::Result,", "    core::{BOOL, Result},")
+          Set-Content $path $content -NoNewline
+
       - name: Format
         run: cargo fmt --all
 
