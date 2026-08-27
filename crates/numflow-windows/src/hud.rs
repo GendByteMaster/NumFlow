@@ -126,9 +126,7 @@ mod tests {
         WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
-    use super::{
-        HudPosition, WorkArea, bottom_right_hud_position, hud_extended_style, style_flag,
-    };
+    use super::{HudPosition, WorkArea, bottom_right_hud_position, hud_extended_style, style_flag};
 
     const WORK: WorkArea = WorkArea {
         left: 0,
