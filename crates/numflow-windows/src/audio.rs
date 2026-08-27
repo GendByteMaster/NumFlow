@@ -10,11 +10,12 @@ use std::{
 use crossbeam_channel::{Sender, TrySendError};
 use numflow_core::{CoreEffect, PointerEffect, StateChange};
 use windows::{
-    Win32::Media::Audio::{PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT},
+    Win32::Media::Audio::{PlaySoundA, SND_MEMORY, SND_NODEFAULT},
     core::PCSTR,
 };
 
 const AUDIO_QUEUE_CAPACITY: usize = 6;
+const RUNTIME_GAIN_PERCENT: i32 = 50;
 
 const TOGGLE_ON_WAV: &[u8] = include_bytes!("../../../assets/sfx/glass/toggle-on.wav");
 const TOGGLE_OFF_WAV: &[u8] = include_bytes!("../../../assets/sfx/glass/toggle-off.wav");
@@ -134,16 +135,61 @@ impl Drop for AudioFeedbackService {
 }
 
 fn play_wave(cue: AudioCue) {
-    let bytes = wave_bytes(cue);
-    // UI SFX buffers are compiled into the binary, so the memory remains valid for the complete
-    // asynchronous playback required by SND_MEMORY | SND_ASYNC.
-    let _ = unsafe {
-        PlaySoundA(
-            PCSTR(bytes.as_ptr()),
-            None,
-            SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
-        )
+    let mut bytes = wave_bytes(cue).to_vec();
+    attenuate_pcm16_wave(&mut bytes, RUNTIME_GAIN_PERCENT);
+
+    // Playback is synchronous only on this dedicated audio worker. Keeping the temporary buffer
+    // alive until PlaySound returns lets NumFlow apply runtime attenuation safely without touching
+    // the user's global Windows mixer volume or the keyboard/pointer threads.
+    let _ = unsafe { PlaySoundA(PCSTR(bytes.as_ptr()), None, SND_MEMORY | SND_NODEFAULT) };
+}
+
+fn attenuate_pcm16_wave(bytes: &mut [u8], gain_percent: i32) {
+    let gain_percent = gain_percent.clamp(0, 100);
+    if gain_percent == 100 {
+        return;
+    }
+
+    let Some((data_start, data_end)) = wave_data_range(bytes) else {
+        return;
     };
+
+    for sample in bytes[data_start..data_end].chunks_exact_mut(2) {
+        let value = i32::from(i16::from_le_bytes([sample[0], sample[1]]));
+        let scaled = value * gain_percent / 100;
+        let encoded = i16::try_from(scaled)
+            .expect("attenuated 16-bit PCM sample must remain in range")
+            .to_le_bytes();
+        sample.copy_from_slice(&encoded);
+    }
+}
+
+fn wave_data_range(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+
+    let mut offset = 12usize;
+    while offset.checked_add(8)? <= bytes.len() {
+        let chunk_size = u32::from_le_bytes([
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ]);
+        let chunk_size = usize::try_from(chunk_size).ok()?;
+        let data_start = offset.checked_add(8)?;
+        let data_end = data_start.checked_add(chunk_size)?.min(bytes.len());
+
+        if &bytes[offset..offset + 4] == b"data" {
+            return Some((data_start, data_end));
+        }
+
+        let padded_size = chunk_size.checked_add(chunk_size & 1)?;
+        offset = data_start.checked_add(padded_size)?;
+    }
+
+    None
 }
 
 fn wave_bytes(cue: AudioCue) -> &'static [u8] {
@@ -189,7 +235,7 @@ fn cue_for_effects(effects: &[CoreEffect]) -> Option<AudioCue> {
 mod tests {
     use numflow_core::{CoreEffect, MouseButton, PointerEffect, StateChange};
 
-    use super::{AudioCue, cue_for_effects, wave_bytes};
+    use super::{AudioCue, attenuate_pcm16_wave, cue_for_effects, wave_bytes};
 
     #[test]
     fn semantic_effects_map_to_non_noisy_cues() {
@@ -242,5 +288,16 @@ mod tests {
             assert!(bytes.starts_with(b"RIFF"));
             assert_eq!(&bytes[8..12], b"WAVE");
         }
+    }
+
+    #[test]
+    fn runtime_attenuation_reduces_pcm_samples() {
+        let mut wave = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\x04\0\0\0\x10\x27\xf0\xd8".to_vec();
+
+        attenuate_pcm16_wave(&mut wave, 50);
+
+        let data = &wave[44..48];
+        assert_eq!(i16::from_le_bytes([data[0], data[1]]), 5_000);
+        assert_eq!(i16::from_le_bytes([data[2], data[3]]), -5_000);
     }
 }
