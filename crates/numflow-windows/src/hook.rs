@@ -3,11 +3,12 @@ use std::{
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender, TrySendError},
+        mpsc::{self, SyncSender},
     },
     thread::{self, JoinHandle},
 };
 
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
@@ -24,7 +25,7 @@ use windows::{
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
-static EVENT_SENDER: OnceLock<Mutex<Option<SyncSender<PhysicalKeyEvent>>>> = OnceLock::new();
+static EVENT_SENDER: OnceLock<Mutex<Option<Sender<PhysicalKeyEvent>>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +78,7 @@ impl KeyboardHook {
         queue_capacity: usize,
     ) -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
         let capacity = queue_capacity.max(1);
-        let (event_sender, event_receiver) = mpsc::sync_channel(capacity);
+        let (event_sender, event_receiver) = crossbeam_channel::bounded(capacity);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
 
         let join = thread::Builder::new()
@@ -165,7 +166,7 @@ impl Drop for KeyboardHook {
 }
 
 fn hook_thread(
-    event_sender: SyncSender<PhysicalKeyEvent>,
+    event_sender: Sender<PhysicalKeyEvent>,
     ready_sender: &SyncSender<Result<u32, HookError>>,
 ) -> Result<(), HookError> {
     let thread_id = unsafe { GetCurrentThreadId() };
@@ -230,7 +231,7 @@ fn run_message_loop() -> Result<(), HookError> {
     }
 }
 
-fn register_sender(sender: SyncSender<PhysicalKeyEvent>) -> bool {
+fn register_sender(sender: Sender<PhysicalKeyEvent>) -> bool {
     let dispatcher = EVENT_SENDER.get_or_init(|| Mutex::new(None));
     let Ok(mut slot) = dispatcher.lock() else {
         return false;

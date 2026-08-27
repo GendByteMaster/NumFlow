@@ -39,6 +39,8 @@ pub enum RuntimeError {
     Start(String),
     #[error("NumFlow background runtime command channel is closed")]
     CommandChannelClosed,
+    #[error("NumFlow background runtime command queue is full")]
+    CommandQueueFull,
     #[error("NumFlow background runtime worker panicked")]
     WorkerPanicked,
 }
@@ -46,22 +48,25 @@ pub enum RuntimeError {
 #[cfg(windows)]
 mod platform {
     use std::{
-        sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+        sync::mpsc::{self, Receiver as StdReceiver, Sender as StdSender, SyncSender},
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
 
+    use crossbeam_channel::{Receiver, Sender, TrySendError};
     use numflow_core::{
         ClickKind, ControllerState, CoreEffect, InputAction, MotionEngine, MotionModifiers,
         PointerBackend, PointerEffect, StateChange,
     };
     use numflow_windows::{
-        KeyState, KeyboardEventNormalizer, KeyboardHook, NormalizedKeyEvent, WindowsPointer,
+        KeyState, KeyboardEventNormalizer, KeyboardHook, NormalizedKeyEvent, PhysicalKeyEvent,
+        WindowsPointer,
     };
 
     use super::{RuntimeConfig, RuntimeError, RuntimeEvent};
 
     const MOTION_TICK: Duration = Duration::from_millis(8);
+    const COMMAND_QUEUE_CAPACITY: usize = 64;
 
     #[derive(Debug)]
     enum RuntimeCommand {
@@ -74,7 +79,7 @@ mod platform {
 
     #[derive(Debug)]
     struct RuntimeEventSink {
-        events: Sender<RuntimeEvent>,
+        events: StdSender<RuntimeEvent>,
         wake: SyncSender<()>,
     }
 
@@ -89,14 +94,15 @@ mod platform {
     #[derive(Debug)]
     pub struct BackgroundRuntime {
         command_sender: Sender<RuntimeCommand>,
-        event_receiver: Receiver<RuntimeEvent>,
-        wake_receiver: Option<Receiver<()>>,
+        event_receiver: StdReceiver<RuntimeEvent>,
+        wake_receiver: Option<StdReceiver<()>>,
         join: Option<JoinHandle<()>>,
     }
 
     impl BackgroundRuntime {
         pub fn start(config: RuntimeConfig) -> Result<Self, RuntimeError> {
-            let (command_sender, command_receiver) = mpsc::channel();
+            let (command_sender, command_receiver) =
+                crossbeam_channel::bounded(COMMAND_QUEUE_CAPACITY);
             let (event_sink, event_receiver) = mpsc::channel();
             let (wake_sender, wake_receiver) = mpsc::sync_channel(1);
             let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -159,7 +165,7 @@ mod platform {
         }
 
         #[must_use]
-        pub fn take_wake_receiver(&mut self) -> Option<Receiver<()>> {
+        pub fn take_wake_receiver(&mut self) -> Option<StdReceiver<()>> {
             self.wake_receiver.take()
         }
 
@@ -173,9 +179,11 @@ mod platform {
         }
 
         fn send(&self, command: RuntimeCommand) -> Result<(), RuntimeError> {
-            self.command_sender
-                .send(command)
-                .map_err(|_| RuntimeError::CommandChannelClosed)
+            match self.command_sender.try_send(command) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(_)) => Err(RuntimeError::CommandQueueFull),
+                Err(TrySendError::Disconnected(_)) => Err(RuntimeError::CommandChannelClosed),
+            }
         }
     }
 
@@ -328,96 +336,147 @@ mod platform {
         let mut normalizer = KeyboardEventNormalizer::default();
         let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
         let _ = ready_sender.send(Ok(()));
+        let motion_tick = crossbeam_channel::tick(MOTION_TICK);
         let mut previous_tick = Instant::now();
         let mut running = true;
 
         while running {
-            let loop_started = Instant::now();
-
-            loop {
-                match command_receiver.try_recv() {
-                    Ok(RuntimeCommand::Shutdown) => {
-                        let effects = match machine.shutdown() {
-                            Ok(effects) => effects,
-                            Err(error) => {
-                                event_sink.send(RuntimeEvent::Fault(error.to_string()));
-                                Vec::new()
-                            }
-                        };
-                        if !effects.is_empty() {
-                            event_sink.send(RuntimeEvent::Effects(effects));
-                        }
-                        hook.emergency_disable();
-                        running = false;
-                        break;
-                    }
-                    Ok(command) => {
-                        if let Err(error) =
-                            apply_command(command, &mut machine, &hook, &mut normalizer)
-                        {
-                            fail_safe(&mut machine, &hook, &mut normalizer, event_sink, &error);
-                        }
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        let _ = machine.shutdown();
-                        hook.emergency_disable();
-                        running = false;
-                        break;
-                    }
-                }
-            }
-
-            if !running {
-                break;
-            }
-
-            while let Ok(event) = keyboard_receiver.try_recv() {
-                let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {
-                    continue;
-                };
-                match machine.handle_key_event(normalized_event) {
-                    Ok(effects) => {
-                        if effects.iter().any(|effect| {
-                            matches!(effect, CoreEffect::State(StateChange::Enabled(false)))
-                        }) {
-                            normalizer.reset();
-                        }
-                        hook.set_interception_enabled(machine.enabled());
-                        if !effects.is_empty() {
-                            event_sink.send(RuntimeEvent::Effects(effects));
-                        }
-                    }
-                    Err(error) => {
-                        fail_safe(
+            if machine.motion.is_moving() {
+                crossbeam_channel::select! {
+                    recv(command_receiver) -> command => {
+                        running = handle_command_message(
+                            command,
                             &mut machine,
                             &hook,
                             &mut normalizer,
                             event_sink,
-                            &error.to_string(),
+                        );
+                    }
+                    recv(keyboard_receiver) -> event => {
+                        running = handle_keyboard_message(
+                            event,
+                            &mut machine,
+                            &hook,
+                            &mut normalizer,
+                            event_sink,
+                        );
+                    }
+                    recv(motion_tick) -> _ => {
+                        let now = Instant::now();
+                        let elapsed = now.saturating_duration_since(previous_tick);
+                        previous_tick = now;
+                        if let Err(error) = machine.tick(elapsed) {
+                            fail_safe(
+                                &mut machine,
+                                &hook,
+                                &mut normalizer,
+                                event_sink,
+                                &error.to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                crossbeam_channel::select! {
+                    recv(command_receiver) -> command => {
+                        running = handle_command_message(
+                            command,
+                            &mut machine,
+                            &hook,
+                            &mut normalizer,
+                            event_sink,
+                        );
+                    }
+                    recv(keyboard_receiver) -> event => {
+                        running = handle_keyboard_message(
+                            event,
+                            &mut machine,
+                            &hook,
+                            &mut normalizer,
+                            event_sink,
                         );
                     }
                 }
-            }
-
-            let now = Instant::now();
-            let elapsed = now.saturating_duration_since(previous_tick);
-            previous_tick = now;
-            if let Err(error) = machine.tick(elapsed) {
-                fail_safe(
-                    &mut machine,
-                    &hook,
-                    &mut normalizer,
-                    event_sink,
-                    &error.to_string(),
-                );
-            }
-
-            let spent = loop_started.elapsed();
-            if spent < MOTION_TICK {
-                thread::sleep(MOTION_TICK.checked_sub(spent).unwrap());
+                previous_tick = Instant::now();
             }
         }
+    }
+
+    fn handle_command_message(
+        command: Result<RuntimeCommand, crossbeam_channel::RecvError>,
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+    ) -> bool {
+        match command {
+            Ok(RuntimeCommand::Shutdown) => {
+                let effects = match machine.shutdown() {
+                    Ok(effects) => effects,
+                    Err(error) => {
+                        event_sink.send(RuntimeEvent::Fault(error.to_string()));
+                        Vec::new()
+                    }
+                };
+                if !effects.is_empty() {
+                    event_sink.send(RuntimeEvent::Effects(effects));
+                }
+                hook.emergency_disable();
+                false
+            }
+            Ok(command) => {
+                if let Err(error) = apply_command(command, machine, hook, normalizer) {
+                    fail_safe(machine, hook, normalizer, event_sink, &error);
+                }
+                true
+            }
+            Err(_) => {
+                let _ = machine.shutdown();
+                hook.emergency_disable();
+                false
+            }
+        }
+    }
+
+    fn handle_keyboard_message(
+        event: Result<PhysicalKeyEvent, crossbeam_channel::RecvError>,
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+    ) -> bool {
+        let Ok(event) = event else {
+            fail_safe(
+                machine,
+                hook,
+                normalizer,
+                event_sink,
+                "keyboard hook event channel disconnected",
+            );
+            return false;
+        };
+        let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {
+            return true;
+        };
+
+        match machine.handle_key_event(normalized_event) {
+            Ok(effects) => {
+                if effects
+                    .iter()
+                    .any(|effect| matches!(effect, CoreEffect::State(StateChange::Enabled(false))))
+                {
+                    normalizer.reset();
+                }
+                hook.set_interception_enabled(machine.enabled());
+                if !effects.is_empty() {
+                    event_sink.send(RuntimeEvent::Effects(effects));
+                }
+            }
+            Err(error) => {
+                fail_safe(machine, hook, normalizer, event_sink, &error.to_string());
+            }
+        }
+        true
     }
 
     fn apply_command(
