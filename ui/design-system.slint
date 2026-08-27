@@ -3,22 +3,27 @@ import { Palette } from "std-widgets.slint";
 export global NumFlowTheme {
     in property <brush> background: Palette.background;
     in property <brush> surface: Palette.alternate-background;
-    in property <brush> material: Palette.background.with-alpha(0.96);
-    in property <brush> material-raised: Palette.alternate-background.with-alpha(0.88);
-    in property <brush> control: Palette.control-background;
+    in property <brush> material: Palette.background.with-alpha(0.88);
+    in property <brush> material-raised: Palette.alternate-background.with-alpha(0.72);
+    in property <brush> control: Palette.control-background.with-alpha(0.78);
     in property <brush> label: Palette.foreground;
     in property <brush> secondary-label: Palette.alternate-foreground;
-    in property <brush> tertiary-label: Palette.alternate-foreground.with-alpha(0.72);
-    in property <brush> separator: Palette.border.with-alpha(0.66);
-    in property <brush> accent: Palette.accent-background;
-    in property <brush> accent-foreground: Palette.accent-foreground;
-    in property <brush> accent-soft: Palette.accent-background.with-alpha(0.14);
-    in property <brush> accent-strong: Palette.accent-background.with-alpha(0.22);
-    in property <brush> hover: Palette.foreground.with-alpha(0.06);
-    in property <brush> pressed: Palette.foreground.with-alpha(0.11);
-    in property <brush> focus-ring: Palette.accent-background.with-alpha(0.78);
-    in property <brush> destructive: #d94b4b;
-    in property <brush> destructive-soft: #d94b4b1c;
+    in property <brush> tertiary-label: Palette.alternate-foreground.with-alpha(0.70);
+    in property <brush> separator: Palette.border.with-alpha(0.32);
+    in property <color> accent: #0a84ff;
+    in property <color> accent-secondary: #64d2ff;
+    in property <color> accent-foreground: #ffffff;
+    in property <brush> accent-soft: #0a84ff20;
+    in property <brush> accent-strong: #0a84ff38;
+    in property <brush> hover: Palette.foreground.with-alpha(0.055);
+    in property <brush> pressed: Palette.foreground.with-alpha(0.10);
+    in property <color> focus-ring: #64d2ff;
+    in property <color> status-active: #30d158;
+    in property <color> destructive: #ff453a;
+    in property <brush> destructive-soft: #ff453a1c;
+    in property <color> glass-border: #ffffff2a;
+    in property <color> glass-highlight: #ffffff32;
+    in property <color> shadow-color: #00000058;
 
     in property <length> radius-small: 7px;
     in property <length> radius-medium: 10px;
@@ -30,24 +35,33 @@ export global NumFlowTheme {
 export component Separator inherits Rectangle {
     min-height: 1px;
     max-height: 1px;
-    background: NumFlowTheme.separator;
+    background: @linear-gradient(90deg, #ffffff00 0%, NumFlowTheme.separator 12%, NumFlowTheme.separator 88%, #ffffff00 100%);
 }
 
 component SegmentedCell inherits Rectangle {
     in property <string> label;
     in property <bool> selected: false;
     in property <bool> enabled: true;
+    in property <bool> reduced-motion: false;
     callback clicked();
 
-    background: interaction.pressed
-        ? NumFlowTheme.pressed
-        : interaction.has-hover && root.enabled
-            ? NumFlowTheme.hover
-            : transparent;
+    background: transparent;
     border-radius: NumFlowTheme.radius-small;
     border-width: keyboard-focus.has-focus ? 2px : 0px;
     border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
     opacity: root.enabled ? 1 : 0.48;
+
+    hover-surface := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: NumFlowTheme.radius-small;
+        background: interaction.pressed ? NumFlowTheme.pressed : NumFlowTheme.hover;
+        opacity: interaction.pressed ? 1 : interaction.has-hover && root.enabled ? 1 : 0;
+        animate opacity {
+            duration: root.reduced-motion ? 0ms : 120ms;
+            easing: ease-out;
+        }
+    }
 
     HorizontalLayout {
         padding-left: 7px;
@@ -57,7 +71,7 @@ component SegmentedCell inherits Rectangle {
 
         Text {
             text: root.selected ? "✓" : "";
-            color: NumFlowTheme.accent;
+            color: NumFlowTheme.accent-secondary;
             font-size: 10px;
             font-weight: 700;
             vertical-alignment: center;
@@ -112,9 +126,20 @@ export component SegmentedControl inherits Rectangle {
     max-height: NumFlowTheme.control-height;
     background: NumFlowTheme.material-raised;
     border-width: 1px;
-    border-color: NumFlowTheme.separator;
+    border-color: NumFlowTheme.glass-border;
     border-radius: NumFlowTheme.radius-medium;
     opacity: root.enabled ? 1 : 0.58;
+    drop-shadow-blur: 7px;
+    drop-shadow-color: #00000022;
+    drop-shadow-offset-y: 2px;
+
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: 1px;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff24 50%, #ffffff00 100%);
+    }
 
     selected-indicator := Rectangle {
         x: root.selected-index == 0
@@ -125,21 +150,24 @@ export component SegmentedControl inherits Rectangle {
         y: 3px;
         width: root.segment-width;
         height: root.height - 6px;
-        background: NumFlowTheme.accent-soft;
+        background: @linear-gradient(135deg, #0a84ff36 0%, #64d2ff18 100%);
         border-width: 1px;
-        border-color: NumFlowTheme.accent.with-alpha(0.36);
+        border-color: #64d2ff62;
         border-radius: NumFlowTheme.radius-small;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #0a84ff24;
+        drop-shadow-offset-y: 1px;
 
         Rectangle {
             x: 1px;
             y: 1px;
             width: parent.width - 2px;
             height: 1px;
-            background: #ffffff26;
+            background: @linear-gradient(90deg, #ffffff08 0%, #ffffff42 50%, #ffffff08 100%);
         }
 
         animate x {
-            duration: root.reduced-motion ? 0ms : 190ms;
+            duration: root.reduced-motion ? 0ms : 210ms;
             easing: ease-out;
         }
     }
@@ -152,6 +180,7 @@ export component SegmentedControl inherits Rectangle {
         label: root.first-label;
         selected: root.selected-index == 0;
         enabled: root.enabled;
+        reduced-motion: root.reduced-motion;
         clicked => { root.selected-index = 0; root.selected(0); }
     }
 
@@ -163,6 +192,7 @@ export component SegmentedControl inherits Rectangle {
         label: root.second-label;
         selected: root.selected-index == 1;
         enabled: root.enabled;
+        reduced-motion: root.reduced-motion;
         clicked => { root.selected-index = 1; root.selected(1); }
     }
 
@@ -174,7 +204,104 @@ export component SegmentedControl inherits Rectangle {
         label: root.third-label;
         selected: root.selected-index == 2;
         enabled: root.enabled;
+        reduced-motion: root.reduced-motion;
         clicked => { root.selected-index = 2; root.selected(2); }
+    }
+}
+
+export component GlassToggle inherits Rectangle {
+    in-out property <bool> checked: false;
+    in property <bool> enabled: true;
+    in property <bool> reduced-motion: false;
+    in property <string> a11y-label: "Toggle";
+    callback toggled(bool);
+
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 26px;
+    max-height: 26px;
+    border-radius: 13px;
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? NumFlowTheme.focus-ring
+        : root.checked
+            ? #64d2ff70
+            : NumFlowTheme.glass-border;
+    background: root.checked
+        ? @linear-gradient(100deg, #0a84ff 0%, #46a9ff 58%, #64d2ff 100%)
+        : NumFlowTheme.material-raised;
+    opacity: root.enabled ? 1 : 0.48;
+    drop-shadow-blur: root.checked ? 8px : 4px;
+    drop-shadow-color: root.checked ? #0a84ff32 : #00000020;
+    drop-shadow-offset-y: 1px;
+
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: @linear-gradient(180deg, #ffffff20 0%, #ffffff00 48%);
+        opacity: interaction.has-hover && root.enabled ? 1 : 0.55;
+        animate opacity {
+            duration: root.reduced-motion ? 0ms : 120ms;
+            easing: ease-out;
+        }
+    }
+
+    knob := Rectangle {
+        x: root.checked ? root.width - self.width - 4px : 4px;
+        y: 4px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #ffffff;
+        drop-shadow-blur: 5px;
+        drop-shadow-color: #00000055;
+        drop-shadow-offset-y: 1px;
+
+        animate x {
+            duration: root.reduced-motion ? 0ms : 190ms;
+            easing: ease-out;
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+        accessible-role: switch;
+        accessible-label: root.a11y-label;
+        accessible-checkable: true;
+        accessible-checked: root.checked;
+        accessible-action-default => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+
+        KeyBinding {
+            keys: @keys(Return);
+            activated => {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            }
+        }
+        KeyBinding {
+            keys: @keys(Space);
+            activated => {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            }
+        }
+
+        interaction := TouchArea {
+            enabled: root.enabled;
+            clicked => {
+                keyboard-focus.focus();
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            }
+        }
     }
 }
 
@@ -182,6 +309,7 @@ export component UtilityButton inherits Rectangle {
     in property <string> text;
     in property <bool> destructive: false;
     in property <bool> enabled: true;
+    in property <bool> reduced-motion: false;
     callback clicked();
 
     min-height: 32px;
@@ -192,14 +320,32 @@ export component UtilityButton inherits Rectangle {
     border-color: keyboard-focus.has-focus
         ? NumFlowTheme.focus-ring
         : root.destructive
-            ? NumFlowTheme.destructive.with-alpha(0.30)
-            : NumFlowTheme.separator.with-alpha(0.72);
-    background: interaction.pressed
-        ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
-        : interaction.has-hover && root.enabled
-            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover
-            : transparent;
+            ? #ff453a50
+            : NumFlowTheme.glass-border;
+    background: NumFlowTheme.material-raised;
     opacity: root.enabled ? 1 : 0.48;
+
+    hover-surface := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: interaction.pressed
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
+            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover;
+        opacity: interaction.pressed ? 1 : interaction.has-hover && root.enabled ? 1 : 0;
+        animate opacity {
+            duration: root.reduced-motion ? 0ms : 120ms;
+            easing: ease-out;
+        }
+    }
+
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: 1px;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff24 50%, #ffffff00 100%);
+    }
 
     Text {
         text: root.text;
@@ -242,13 +388,21 @@ export component DisclosureRow inherits Rectangle {
     min-height: 34px;
     max-height: 34px;
     border-radius: NumFlowTheme.radius-small;
-    background: interaction.pressed
-        ? NumFlowTheme.pressed
-        : interaction.has-hover
-            ? NumFlowTheme.hover
-            : transparent;
+    background: transparent;
     border-width: keyboard-focus.has-focus ? 2px : 0px;
     border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
+
+    hover-surface := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: interaction.pressed ? NumFlowTheme.pressed : NumFlowTheme.hover;
+        opacity: interaction.pressed ? 1 : interaction.has-hover ? 1 : 0;
+        animate opacity {
+            duration: root.reduced-motion ? 0ms : 120ms;
+            easing: ease-out;
+        }
+    }
 
     HorizontalLayout {
         padding-left: 2px;
@@ -267,9 +421,13 @@ export component DisclosureRow inherits Rectangle {
 
         Text {
             text: root.expanded ? "⌄" : "›";
-            color: NumFlowTheme.secondary-label;
+            color: root.expanded ? NumFlowTheme.accent-secondary : NumFlowTheme.secondary-label;
             font-size: 17px;
             font-weight: 500;
+            opacity: interaction.has-hover || root.expanded ? 1 : 0.78;
+            animate opacity {
+                duration: root.reduced-motion ? 0ms : 120ms;
+            }
         }
     }
 
@@ -298,21 +456,40 @@ export component MappingRow inherits Rectangle {
     in property <string> key-label;
     in property <string> action-label;
 
-    min-height: 25px;
-    max-height: 25px;
+    min-height: 27px;
+    max-height: 27px;
     background: transparent;
 
     HorizontalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
 
-        Text {
-            text: root.key-label;
-            color: NumFlowTheme.label;
-            font-size: 12px;
-            font-weight: 600;
-            min-width: 42px;
-            max-width: 42px;
+        Rectangle {
+            min-width: 38px;
+            max-width: 38px;
+            min-height: 22px;
+            max-height: 22px;
+            border-radius: 6px;
+            background: NumFlowTheme.material-raised;
+            border-width: 1px;
+            border-color: NumFlowTheme.glass-border;
+
+            Rectangle {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: 1px;
+                background: #ffffff20;
+            }
+
+            Text {
+                text: root.key-label;
+                color: NumFlowTheme.label;
+                font-size: 11px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         Text {
@@ -327,18 +504,29 @@ export component MappingRow inherits Rectangle {
 export component MenuAction inherits Rectangle {
     in property <string> text;
     in property <bool> destructive: false;
+    in property <bool> reduced-motion: false;
     callback clicked();
 
     min-height: 34px;
     max-height: 34px;
     border-radius: NumFlowTheme.radius-small;
-    background: interaction.pressed
-        ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
-        : interaction.has-hover
-            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover
-            : transparent;
+    background: transparent;
     border-width: keyboard-focus.has-focus ? 2px : 0px;
     border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
+
+    hover-surface := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: interaction.pressed
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
+            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover;
+        opacity: interaction.pressed ? 1 : interaction.has-hover ? 1 : 0;
+        animate opacity {
+            duration: root.reduced-motion ? 0ms : 120ms;
+            easing: ease-out;
+        }
+    }
 
     Text {
         x: 10px;

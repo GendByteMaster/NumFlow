@@ -1,4 +1,4 @@
-import { Palette } from "std-widgets.slint";
+import { NumFlowTheme } from "design-system.slint";
 
 export enum HudIconKind {
     power-on,
@@ -13,8 +13,8 @@ export enum HudIconKind {
 
 export component HudWindow inherits Window {
     title: "NumFlow HUD";
-    width: 272px;
-    height: 78px;
+    width: 288px;
+    height: 84px;
     background: transparent;
     no-frame: true;
     always-on-top: true;
@@ -23,6 +23,8 @@ export component HudWindow inherits Window {
     in-out property <string> headline: "NumFlow";
     in-out property <string> detail: "Ready";
     in-out property <bool> persistent: false;
+    in-out property <bool> revealed: false;
+    in-out property <bool> reduced-motion: false;
 
     private property <image> icon-source:
         root.icon-kind == HudIconKind.power-on
@@ -41,44 +43,124 @@ export component HudWindow inherits Window {
                                     ? @image-url("../assets/icons/numflow/drag-lock.svg")
                                     : @image-url("../assets/numflow-icon.svg");
 
-    Rectangle {
-        x: 6px;
-        y: 6px;
-        width: parent.width - 12px;
+    glass := Rectangle {
+        x: 8px;
+        y: root.revealed ? 6px : 10px;
+        width: parent.width - 16px;
         height: parent.height - 12px;
-        background: Palette.background;
-        border-width: root.persistent ? 2px : 1px;
-        border-color: root.persistent ? Palette.accent-background : Palette.border;
-        border-radius: 16px;
+        opacity: root.revealed ? 1 : 0;
+        background: NumFlowTheme.material;
+        border-width: root.persistent ? 1px : 1px;
+        border-color: root.persistent ? #64d2ff82 : NumFlowTheme.glass-border;
+        border-radius: 17px;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: NumFlowTheme.shadow-color;
+        drop-shadow-offset-y: 5px;
+
+        animate y, opacity {
+            duration: root.reduced-motion ? 0ms : 180ms;
+            easing: ease-out;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: @linear-gradient(135deg, #ffffff14 0%, #ffffff05 44%, #0a84ff12 100%);
+        }
+
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: @linear-gradient(90deg, #ffffff08 0%, #ffffff42 48%, #64d2ff20 75%, #ffffff00 100%);
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 19px;
+            width: 2px;
+            height: parent.height - 38px;
+            border-radius: 1px;
+            background: NumFlowTheme.accent-secondary;
+            opacity: root.persistent ? 0.95 : 0;
+            animate opacity {
+                duration: root.reduced-motion ? 0ms : 150ms;
+            }
+        }
 
         HorizontalLayout {
-            padding: 12px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 10px;
+            padding-bottom: 10px;
             spacing: 11px;
+            cross-axis-alignment: center;
 
-            Image {
-                source: root.icon-source;
-                width: 34px;
-                height: 34px;
-                image-fit: contain;
-                accessible-role: none;
+            Rectangle {
+                min-width: 42px;
+                max-width: 42px;
+                min-height: 42px;
+                max-height: 42px;
+                border-radius: 12px;
+                background: @linear-gradient(145deg, #0a84ff30 0%, #64d2ff12 100%);
+                border-width: 1px;
+                border-color: #64d2ff42;
+                drop-shadow-blur: 8px;
+                drop-shadow-color: #0a84ff20;
+
+                Rectangle {
+                    x: 1px;
+                    y: 1px;
+                    width: parent.width - 2px;
+                    height: 1px;
+                    background: #ffffff32;
+                }
+
+                Image {
+                    x: 7px;
+                    y: 7px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.icon-source;
+                    image-fit: contain;
+                    accessible-role: none;
+                }
             }
 
             VerticalLayout {
                 spacing: 2px;
+                horizontal-stretch: 1;
 
                 Text {
                     text: root.headline;
-                    color: Palette.foreground;
-                    font-size: 14px;
+                    color: NumFlowTheme.label;
+                    font-size: 13px;
                     font-weight: 600;
                     overflow: elide;
                 }
 
                 Text {
                     text: root.detail;
-                    color: Palette.alternate-foreground;
-                    font-size: 11px;
+                    color: NumFlowTheme.secondary-label;
+                    font-size: 10px;
                     overflow: elide;
+                }
+            }
+
+            Rectangle {
+                min-width: 8px;
+                max-width: 8px;
+                min-height: 8px;
+                max-height: 8px;
+                border-radius: 4px;
+                background: NumFlowTheme.accent-secondary;
+                opacity: root.persistent ? 1 : 0;
+                drop-shadow-blur: 6px;
+                drop-shadow-color: #64d2ff70;
+                animate opacity {
+                    duration: root.reduced-motion ? 0ms : 150ms;
                 }
             }
         }

@@ -1,6 +1,6 @@
-import { Button, ComboBox, Slider, Switch } from "std-widgets.slint";
+import { Button, ComboBox, Slider } from "std-widgets.slint";
 import {
-    DisclosureRow, MappingRow, MenuAction, NumFlowTheme, SegmentedControl,
+    DisclosureRow, GlassToggle, MappingRow, MenuAction, NumFlowTheme, SegmentedControl,
     Separator, UtilityButton
 } from "design-system.slint";
 export * from "hud.slint";
@@ -18,7 +18,7 @@ export component AppWindow inherits Window {
     preferred-height: 420px;
     min-width: 540px;
     min-height: 390px;
-    background: NumFlowTheme.background;
+    background: transparent;
 
     in-out property <bool> numflow-enabled: false;
     in-out property <float> pointer-speed: 180;
@@ -143,6 +143,7 @@ export component AppWindow inherits Window {
 
                     Button { text: "Cancel"; clicked => { reset-dialog.close(); } }
                     UtilityButton {
+                        reduced-motion: root.reduced-motion;
                         text: "Reset all";
                         destructive: true;
                         min-width: 76px;
@@ -175,6 +176,8 @@ export component AppWindow inherits Window {
                 spacing: 2px;
 
                 MenuAction {
+
+                    reduced-motion: root.reduced-motion;
                     text: "Reset pointer settings";
                     clicked => {
                         root.reset-pointer-settings();
@@ -184,6 +187,8 @@ export component AppWindow inherits Window {
                 }
 
                 MenuAction {
+
+                    reduced-motion: root.reduced-motion;
                     text: "Reset bindings";
                     clicked => {
                         root.reset-bindings();
@@ -193,6 +198,8 @@ export component AppWindow inherits Window {
                 }
 
                 MenuAction {
+
+                    reduced-motion: root.reduced-motion;
                     text: "Reset all settings…";
                     destructive: true;
                     clicked => {
@@ -241,6 +248,8 @@ export component AppWindow inherits Window {
                     Rectangle { horizontal-stretch: 1; background: transparent; }
 
                     UtilityButton {
+
+                        reduced-motion: root.reduced-motion;
                         text: "Done";
                         min-width: 58px;
                         clicked => { bindings-panel.close(); }
@@ -342,7 +351,28 @@ export component AppWindow inherits Window {
             y: 0px;
             width: parent.width;
             height: 1px;
-            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff2b 50%, #ffffff00 100%);
+            background: @linear-gradient(90deg, #0a84ff00 0%, #64d2ff24 24%, #ffffff2c 50%, #0a84ff18 76%, #0a84ff00 100%);
+        }
+
+        ambient-top := Rectangle {
+            x: -88px;
+            y: -148px;
+            width: 430px;
+            height: 300px;
+            background: @radial-gradient(circle, #64d2ff14 0%, #0a84ff09 38%, #0a84ff00 72%);
+            opacity: root.numflow-enabled ? 1 : 0.46;
+            animate opacity {
+                duration: root.reduced-motion ? 0ms : 220ms;
+                easing: ease-out;
+            }
+        }
+
+        Rectangle {
+            x: parent.width - 250px;
+            y: parent.height - 210px;
+            width: 320px;
+            height: 250px;
+            background: @radial-gradient(circle, #0a84ff0c 0%, #0a84ff00 70%);
         }
 
         VerticalLayout {
@@ -361,10 +391,43 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     cross-axis-alignment: center;
 
-                    Text {
-                        text: root.numflow-enabled ? "●" : "○";
-                        color: root.numflow-enabled ? NumFlowTheme.accent : NumFlowTheme.secondary-label;
-                        font-size: 12px;
+                    Rectangle {
+                        min-width: 14px;
+                        max-width: 14px;
+                        min-height: 14px;
+                        max-height: 14px;
+                        background: transparent;
+
+                        Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: #30d15820;
+                            opacity: root.numflow-enabled ? 1 : 0;
+                            animate opacity {
+                                duration: root.reduced-motion ? 0ms : 180ms;
+                                easing: ease-out;
+                            }
+                        }
+
+                        Rectangle {
+                            x: 4px;
+                            y: 4px;
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: root.numflow-enabled ? NumFlowTheme.status-active : transparent;
+                            border-width: root.numflow-enabled ? 0px : 1px;
+                            border-color: NumFlowTheme.secondary-label;
+                            drop-shadow-blur: root.numflow-enabled ? 6px : 0px;
+                            drop-shadow-color: #30d15872;
+                            animate background {
+                                duration: root.reduced-motion ? 0ms : 180ms;
+                                easing: ease-out;
+                            }
+                        }
                     }
 
                     Text {
@@ -376,11 +439,19 @@ export component AppWindow inherits Window {
 
                     Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                    Switch {
-                        accessible-label: "NumFlow";
-                        text: root.numflow-enabled ? "On" : "Off";
+                    GlassToggle {
+                        a11y-label: "NumFlow";
                         checked <=> root.numflow-enabled;
-                        toggled => { root.enabled-toggled(self.checked); }
+                        reduced-motion: root.reduced-motion;
+                        toggled(checked) => { root.enabled-toggled(checked); }
+                    }
+
+                    Text {
+                        text: root.numflow-enabled ? "On" : "Off";
+                        color: NumFlowTheme.secondary-label;
+                        font-size: 11px;
+                        min-width: 22px;
+                        max-width: 22px;
                     }
                 }
             }
@@ -582,13 +653,19 @@ export component AppWindow inherits Window {
 
                     Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                    Switch {
-                        enabled: root.advanced-open;
-                        accessible-label: "Precision mode";
+                    Text {
                         text: root.precision-enabled ? "On" : "Off";
+                        color: NumFlowTheme.secondary-label;
+                        font-size: 10px;
+                    }
+
+                    GlassToggle {
+                        enabled: root.advanced-open;
+                        a11y-label: "Precision mode";
                         checked <=> root.precision-enabled;
-                        toggled => {
-                            root.precision-toggled(self.checked);
+                        reduced-motion: root.reduced-motion;
+                        toggled(checked) => {
+                            root.precision-toggled(checked);
                             root.mark-saved();
                         }
                     }
@@ -617,12 +694,12 @@ export component AppWindow inherits Window {
                         font-weight: 500;
                     }
 
-                    Switch {
-                        accessible-label: "HUD";
-                        text: "";
+                    GlassToggle {
+                        a11y-label: "HUD";
                         checked <=> root.hud-enabled;
-                        toggled => {
-                            root.hud-toggled(self.checked);
+                        reduced-motion: root.reduced-motion;
+                        toggled(checked) => {
+                            root.hud-toggled(checked);
                             root.mark-saved();
                         }
                     }
@@ -638,12 +715,16 @@ export component AppWindow inherits Window {
                     Rectangle { horizontal-stretch: 1; background: transparent; }
 
                     UtilityButton {
+
+                        reduced-motion: root.reduced-motion;
                         text: "Bindings…";
                         min-width: 82px;
                         clicked => { bindings-panel.show(); }
                     }
 
                     UtilityButton {
+
+                        reduced-motion: root.reduced-motion;
                         text: "⋯";
                         min-width: 34px;
                         max-width: 34px;

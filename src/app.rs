@@ -416,6 +416,36 @@ fn set_windows_startup(_enabled: bool) -> bool {
     true
 }
 
+#[cfg(windows)]
+fn configure_main_window_material(window: &AppWindow) {
+    use slint::winit_030::{
+        WinitWindowAccessor,
+        winit::platform::windows::{BackdropType, WindowExtWindows},
+    };
+
+    let weak_window = window.as_weak();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        let Some(window) = weak_window.upgrade() else {
+            return;
+        };
+
+        let configured = window.window().with_winit_window(|winit_window| {
+            // Mica is a native Windows 11 system backdrop. Unsupported systems simply keep the
+            // translucent Slint material fallback drawn by the UI.
+            winit_window.set_system_backdrop(BackdropType::MainWindow);
+        });
+
+        if configured.is_none() {
+            tracing::warn!(
+                "NumFlow glass material requires the Slint winit backend; using translucent fallback"
+            );
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn configure_main_window_material(_window: &AppWindow) {}
+
 fn connect_pointer_controls(
     window: &AppWindow,
     tray: &AppTray,
@@ -931,15 +961,22 @@ pub fn run() -> Result<(), AppError> {
     let tray = AppTray::new().map_err(|error| AppError::Ui(error.to_string()))?;
     tracing::info!("NumFlow system tray ready; keyboard runtime is already active");
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
+    configure_main_window_material(&window);
 
     #[cfg(windows)]
-    match numflow_windows::client_area_animations_enabled() {
-        Ok(enabled) => window.set_reduced_motion(!enabled),
-        Err(error) => tracing::warn!(
-            %error,
-            "failed to read Windows client-area animation preference; using standard UI motion"
-        ),
-    }
+    let reduced_motion = match numflow_windows::client_area_animations_enabled() {
+        Ok(enabled) => !enabled,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "failed to read Windows client-area animation preference; using standard UI motion"
+            );
+            false
+        }
+    };
+    #[cfg(not(windows))]
+    let reduced_motion = false;
+    window.set_reduced_motion(reduced_motion);
 
     #[cfg(windows)]
     if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {
@@ -965,6 +1002,7 @@ pub fn run() -> Result<(), AppError> {
     ));
     hud.borrow_mut()
         .set_enabled(settings.borrow().hud_enabled());
+    hud.borrow_mut().set_reduced_motion(reduced_motion);
 
     tracing::info!(
         profile = settings.borrow().active_profile_name(),

@@ -5,7 +5,7 @@ use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
 
 #[cfg(windows)]
 use slint::winit_030::winit::{
-    platform::windows::WindowExtWindows,
+    platform::windows::{BackdropType, WindowExtWindows},
     raw_window_handle::{HasWindowHandle, RawWindowHandle},
 };
 
@@ -112,6 +112,10 @@ impl HudController {
         }
     }
 
+    pub fn set_reduced_motion(&mut self, reduced_motion: bool) {
+        self.window.set_reduced_motion(reduced_motion);
+    }
+
     pub fn observe_effects(&mut self, effects: &[CoreEffect]) {
         for effect in effects {
             match *effect {
@@ -172,6 +176,7 @@ impl HudController {
     }
 
     fn present(&mut self, presentation: &HudPresentation) {
+        self.window.set_revealed(false);
         self.window.set_headline(presentation.headline.into());
         self.window.set_detail(presentation.detail.into());
         self.window.set_icon_kind(presentation.icon);
@@ -211,6 +216,7 @@ impl HudController {
     }
 
     fn hide_window(&self) {
+        self.window.set_revealed(false);
         if let Err(error) = self.window.hide() {
             tracing::warn!(%error, "failed to hide NumFlow HUD");
         }
@@ -238,6 +244,7 @@ impl HudController {
                     "NumFlow HUD requires the Slint winit backend for overlay window behavior"
                 );
             }
+            window.set_revealed(true);
         });
     }
 }
@@ -246,6 +253,9 @@ impl HudController {
 fn configure_native_hud_window(winit_window: &slint::winit_030::winit::window::Window) {
     // Winit maintains the shell-facing skip-taskbar state (including Explorer restarts).
     winit_window.set_skip_taskbar(true);
+    // TransientWindow maps to the Windows Background Acrylic system backdrop when available.
+    // Older Windows versions keep the Slint translucent material fallback.
+    winit_window.set_system_backdrop(BackdropType::TransientWindow);
 
     let handle = match winit_window.window_handle() {
         Ok(handle) => handle,
