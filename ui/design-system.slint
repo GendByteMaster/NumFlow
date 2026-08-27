@@ -1,0 +1,147 @@
+import { Palette } from "std-widgets.slint";
+
+export global NumFlowTheme {
+    in property <brush> background: Palette.background;
+    in property <brush> surface: Palette.alternate-background;
+    in property <brush> control: Palette.control-background;
+    in property <brush> label: Palette.foreground;
+    in property <brush> secondary-label: Palette.alternate-foreground;
+    in property <brush> separator: Palette.border;
+    in property <brush> accent: Palette.accent-background;
+    in property <brush> accent-foreground: Palette.accent-foreground;
+    in property <brush> accent-soft: Palette.accent-background.with-alpha(0.14);
+    in property <brush> hover: Palette.foreground.with-alpha(0.06);
+    in property <brush> pressed: Palette.foreground.with-alpha(0.10);
+
+    in property <length> radius-small: 7px;
+    in property <length> radius-medium: 10px;
+    in property <length> control-height: 32px;
+    in property <length> key-height: 48px;
+}
+
+export component Separator inherits Rectangle {
+    min-height: 1px;
+    max-height: 1px;
+    background: NumFlowTheme.separator;
+}
+
+export component SectionTitle inherits Text {
+    in property <string> label;
+    text: root.label;
+    color: NumFlowTheme.label;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+export component SegmentedOption inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback clicked();
+
+    min-height: NumFlowTheme.control-height;
+    border-radius: NumFlowTheme.radius-small;
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? NumFlowTheme.accent
+        : root.selected
+            ? NumFlowTheme.accent.with-alpha(0.45)
+            : NumFlowTheme.separator.with-alpha(0.70);
+    background: interaction.pressed
+        ? NumFlowTheme.pressed
+        : root.selected
+            ? NumFlowTheme.accent-soft
+            : interaction.has-hover
+                ? NumFlowTheme.hover
+                : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+        alignment: center;
+
+        Text {
+            text: root.selected ? "✓" : "";
+            color: root.selected ? NumFlowTheme.accent : NumFlowTheme.secondary-label;
+            font-size: 11px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: NumFlowTheme.label;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 500;
+            vertical-alignment: center;
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+
+        accessible-role: radio-button;
+        accessible-label: root.label;
+        accessible-checkable: true;
+        accessible-checked: root.selected;
+        accessible-action-default => { root.clicked(); }
+
+        KeyBinding {
+            keys: @keys(Return);
+            activated => { root.clicked(); }
+        }
+
+        KeyBinding {
+            keys: @keys(Space);
+            activated => { root.clicked(); }
+        }
+
+        interaction := TouchArea {
+            clicked => {
+                keyboard-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component KeyTile inherits Rectangle {
+    in property <string> key-label;
+    in property <string> action-label;
+    in property <bool> active: false;
+
+    min-height: NumFlowTheme.key-height;
+    border-radius: NumFlowTheme.radius-medium;
+    border-width: root.active ? 2px : 1px;
+    border-color: root.active ? NumFlowTheme.accent : NumFlowTheme.separator;
+    background: root.active ? NumFlowTheme.accent-soft : NumFlowTheme.control;
+
+    VerticalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 1px;
+        alignment: center;
+
+        Text {
+            text: root.key-label;
+            color: NumFlowTheme.label;
+            font-size: 15px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: root.active ? "Pressed · " + root.action-label : root.action-label;
+            color: root.active ? NumFlowTheme.accent : NumFlowTheme.secondary-label;
+            font-size: 10px;
+            font-weight: root.active ? 600 : 400;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}

@@ -2,6 +2,7 @@ fn main() {
     for path in [
         "ui/main.slint",
         "ui/app.slint",
+        "ui/design-system.slint",
         "ui/tray.slint",
         "ui/hud.slint",
         "assets/icons/numflow/tray-mouse-left.svg",
