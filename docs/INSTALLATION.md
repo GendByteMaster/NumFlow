@@ -1,5 +1,7 @@
 # Installing NumFlow on Windows
 
+NumFlow v0.1 is currently released for **Windows x64 only**. Linux and macOS support is planned for future versions, but there are no supported Linux or macOS installation packages yet.
+
 NumFlow is distributed in two Windows x64 formats:
 
 - `NumFlow-<version>-x64.msi` — recommended installed build.
@@ -74,3 +76,7 @@ Tagged GitHub releases include `SHA256SUMS.txt`. Compare the SHA-256 hash of the
 ## Current signing status
 
 The current release pipeline produces unsigned artifacts. Windows may therefore show SmartScreen or publisher warnings. Production code signing is a separate release-readiness item and should be added only with a protected code-signing certificate workflow; private signing material must never be committed to the repository.
+
+## Future platforms
+
+Linux and macOS support is part of the future platform direction. Their input backends, startup integration, packaging, and release validation will be implemented separately rather than treating the current Windows installer or Win32 input backend as cross-platform.
