@@ -45,11 +45,38 @@ pub enum ConfigError {
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct InterfaceSoundsEnabled(bool);
+
+impl InterfaceSoundsEnabled {
+    pub const ENABLED: Self = Self(true);
+
+    #[must_use]
+    pub const fn get(self) -> bool {
+        self.0
+    }
+}
+
+impl Default for InterfaceSoundsEnabled {
+    fn default() -> Self {
+        Self::ENABLED
+    }
+}
+
+impl From<bool> for InterfaceSoundsEnabled {
+    fn from(enabled: bool) -> Self {
+        Self(enabled)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     pub schema_version: u32,
     pub active_profile: String,
     pub hud_enabled: bool,
+    #[serde(default)]
+    pub sounds_enabled: InterfaceSoundsEnabled,
     pub start_minimized: bool,
     pub start_with_windows: bool,
     pub profiles: BTreeMap<String, ProfileConfig>,
@@ -106,6 +133,7 @@ impl Default for AppConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             active_profile: "Normal".to_owned(),
             hud_enabled: true,
+            sounds_enabled: InterfaceSoundsEnabled::ENABLED,
             start_minimized: false,
             start_with_windows: false,
             profiles,
@@ -549,6 +577,20 @@ mod tests {
         assert_eq!(loaded.config, config);
 
         let _ = fs::remove_dir_all(path.parent().expect("test path has parent"));
+    }
+
+    #[test]
+    fn legacy_config_without_sound_preference_defaults_to_enabled() {
+        let serialized =
+            toml::to_string_pretty(&AppConfig::default()).expect("default config should serialize");
+        let legacy = serialized
+            .lines()
+            .filter(|line| !line.starts_with("sounds_enabled ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: AppConfig = toml::from_str(&legacy).expect("legacy config should deserialize");
+
+        assert!(parsed.sounds_enabled.get());
     }
 
     #[test]

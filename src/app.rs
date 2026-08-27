@@ -20,7 +20,7 @@ use crate::{
     config::{AppConfig, ConfigError, ConfigLoadStatus, ConfigStore, NumpadKeyConfig},
     error::AppError,
     hud::{HudController, HudEvent},
-    runtime::{BackgroundRuntime, RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot},
+    runtime::{BackgroundRuntime, RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot, UiSoundCue},
 };
 
 const DEFAULT_POINTER_SPEED: f32 = 180.0;
@@ -120,6 +120,14 @@ impl UiSettings {
 
     fn hud_enabled(&self) -> bool {
         self.config.hud_enabled
+    }
+
+    fn set_sounds_enabled(&mut self, enabled: bool) {
+        self.config.sounds_enabled = enabled.into();
+    }
+
+    fn sounds_enabled(&self) -> bool {
+        self.config.sounds_enabled.get()
     }
 
     fn set_start_minimized(&mut self, enabled: bool) {
@@ -234,6 +242,7 @@ impl UiSettings {
             self.controller.selected_button(),
             self.controller.is_precision_enabled(),
         )
+        .with_sounds_enabled(self.sounds_enabled())
     }
 
     fn reset_pointer_settings(&mut self) -> Vec<CoreEffect> {
@@ -328,6 +337,7 @@ fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
         DEFAULT_POINTER_ACCELERATION,
     ));
     window.set_hud_enabled(settings.hud_enabled());
+    window.set_sounds_enabled(settings.sounds_enabled());
     window.set_active_profile(settings.active_profile_name().into());
     sync_binding_view(window, settings);
 }
@@ -397,6 +407,18 @@ fn runtime_set_bindings(runtime: &SharedRuntime, settings: &SharedUiSettings) {
     let bindings = settings.borrow().bindings.clone();
     if let Err(error) = runtime.borrow().set_bindings(bindings) {
         tracing::error!(%error, "failed to update background NumPad bindings");
+    }
+}
+
+fn runtime_play_sound(runtime: &SharedRuntime, cue: UiSoundCue) {
+    if let Err(error) = runtime.borrow().play_sound(cue) {
+        tracing::debug!(%error, ?cue, "UI sound cue could not be queued");
+    }
+}
+
+fn runtime_set_sounds_enabled(runtime: &SharedRuntime, enabled: bool) {
+    if let Err(error) = runtime.borrow().set_sounds_enabled(enabled) {
+        tracing::warn!(%error, enabled, "failed to update interface sound preference in runtime");
     }
 }
 
@@ -580,6 +602,44 @@ fn connect_binding_controls(
                 sync_binding_view(&window, &settings.borrow());
             }
             persist_configuration(&settings, &store);
+        });
+    }
+}
+
+fn connect_sound_preferences(
+    window: &AppWindow,
+    settings: &SharedUiSettings,
+    store: &SharedConfigStore,
+    runtime: &SharedRuntime,
+) {
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
+        window.on_sounds_toggled(move |enabled| {
+            if enabled {
+                runtime_set_sounds_enabled(&runtime, true);
+                runtime_play_sound(&runtime, UiSoundCue::ToggleOn);
+            } else {
+                // FIFO command ordering lets the off cue play before muting the worker.
+                runtime_play_sound(&runtime, UiSoundCue::ToggleOff);
+                runtime_set_sounds_enabled(&runtime, false);
+            }
+            settings.borrow_mut().set_sounds_enabled(enabled);
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let runtime = Rc::clone(runtime);
+        window.on_ui_sound_requested(move |name| {
+            if !settings.borrow().sounds_enabled() {
+                return;
+            }
+            if let Some(cue) = UiSoundCue::from_name(name.as_str()) {
+                runtime_play_sound(&runtime, cue);
+            }
         });
     }
 }
@@ -870,6 +930,7 @@ fn start_runtime_event_bridge(
                 RuntimeEvent::Fault { state, reason } => {
                     config_changed |= sync_runtime_state(&mut settings.borrow_mut(), state);
                     tracing::error!(%reason, "NumFlow background pointer runtime entered safe disabled state");
+                    runtime_play_sound(&runtime, UiSoundCue::Error);
                     hud.borrow_mut().observe_effects(&[CoreEffect::State(
                         StateChange::Enabled(false),
                     )]);
@@ -924,6 +985,7 @@ fn connect_ui(
 ) {
     connect_pointer_controls(window, tray, settings, hud, store, runtime);
     connect_binding_controls(window, settings, store, runtime);
+    connect_sound_preferences(window, settings, store, runtime);
     connect_preferences(window, tray, settings, hud, store, runtime);
     connect_tray(window, tray, settings, hud, store, runtime);
 }
@@ -1009,6 +1071,7 @@ pub fn run() -> Result<(), AppError> {
         bindings = settings.borrow().binding_count(),
         start_minimized = settings.borrow().start_minimized(),
         start_with_windows = settings.borrow().start_with_windows(),
+        sounds_enabled = settings.borrow().sounds_enabled(),
         path = %store.path().display(),
         "configuration and background runtime ready"
     );

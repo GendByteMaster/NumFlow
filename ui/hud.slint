@@ -105,11 +105,18 @@ export component HudWindow inherits Window {
                 min-height: 42px;
                 max-height: 42px;
                 border-radius: 12px;
+                transform-scale: root.revealed ? 1 : 0.88;
+                transform-rotation: root.revealed ? 0deg : -5deg;
                 background: @linear-gradient(145deg, #0a84ff30 0%, #64d2ff12 100%);
                 border-width: 1px;
                 border-color: #64d2ff42;
                 drop-shadow-blur: 8px;
                 drop-shadow-color: #0a84ff20;
+
+                animate transform-scale, transform-rotation {
+                    duration: root.reduced-motion ? 0ms : 210ms;
+                    easing: ease-out-back;
+                }
 
                 Rectangle {
                     x: 1px;

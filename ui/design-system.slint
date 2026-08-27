@@ -171,7 +171,7 @@ export component SegmentedControl inherits Rectangle {
 
         animate x {
             duration: root.reduced-motion ? 0ms : 210ms;
-            easing: ease-out;
+            easing: ease-out-back;
         }
     }
 
@@ -262,8 +262,8 @@ export component GlassToggle inherits Rectangle {
         drop-shadow-offset-y: 1px;
 
         animate x {
-            duration: root.reduced-motion ? 0ms : 190ms;
-            easing: ease-out;
+            duration: root.reduced-motion ? 0ms : 200ms;
+            easing: ease-out-back;
         }
     }
 
@@ -423,13 +423,23 @@ export component DisclosureRow inherits Rectangle {
         Rectangle { horizontal-stretch: 1; background: transparent; }
 
         Text {
-            text: root.expanded ? "⌄" : "›";
+            text: "›";
             color: root.expanded ? NumFlowTheme.accent-secondary : NumFlowTheme.secondary-label;
             font-size: 17px;
             font-weight: 500;
             opacity: interaction.has-hover || root.expanded ? 1 : 0.78;
+            transform-rotation: root.expanded ? 90deg : 0deg;
+            transform-scale: interaction.pressed ? 0.92 : 1;
             animate opacity {
                 duration: root.reduced-motion ? 0ms : 120ms;
+            }
+            animate transform-rotation {
+                duration: root.reduced-motion ? 0ms : 210ms;
+                easing: ease-out-back;
+            }
+            animate transform-scale {
+                duration: root.reduced-motion ? 0ms : 120ms;
+                easing: ease-out;
             }
         }
     }

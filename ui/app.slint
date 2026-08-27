@@ -15,9 +15,9 @@ export component AppWindow inherits Window {
     title: "NumFlow";
     icon: @image-url("../assets/numflow-icon.svg");
     preferred-width: 600px;
-    preferred-height: 420px;
+    preferred-height: 440px;
     min-width: 540px;
-    min-height: 390px;
+    min-height: 410px;
     background: transparent;
 
     in-out property <bool> numflow-enabled: false;
@@ -27,6 +27,7 @@ export component AppWindow inherits Window {
     in-out property <MouseButtonMode> active-button: MouseButtonMode.left;
     in-out property <string> active-key: "";
     in-out property <bool> hud-enabled: true;
+    in-out property <bool> sounds-enabled: true;
     in-out property <string> active-profile: "Normal";
     in-out property <int> binding-key-index: 0;
     in-out property <int> binding-action-index: 1;
@@ -53,6 +54,8 @@ export component AppWindow inherits Window {
     callback speed-changed(float);
     callback acceleration-changed(float);
     callback hud-toggled(bool);
+    callback sounds-toggled(bool);
+    callback ui-sound-requested(string);
     callback profile-changed(string);
     callback binding-key-changed(int);
     callback binding-action-changed(int);
@@ -203,6 +206,7 @@ export component AppWindow inherits Window {
                     text: "Reset all settings…";
                     destructive: true;
                     clicked => {
+                        root.ui-sound-requested("delete");
                         more-menu.close();
                         reset-dialog.show();
                     }
@@ -252,7 +256,7 @@ export component AppWindow inherits Window {
                         reduced-motion: root.reduced-motion;
                         text: "Done";
                         min-width: 58px;
-                        clicked => { bindings-panel.close(); }
+                        clicked => { root.ui-sound-requested("close"); bindings-panel.close(); }
                     }
                 }
 
@@ -522,6 +526,7 @@ export component AppWindow inherits Window {
                         selected(index) => {
                             root.active-profile = index == 0 ? "Normal" : index == 1 ? "Precision" : "Fast";
                             root.profile-changed(root.active-profile);
+                            root.ui-sound-requested("select");
                             root.mark-saved();
                         }
                     }
@@ -618,18 +623,21 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle { min-height: 14px; max-height: 14px; background: transparent; }
+            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
 
             DisclosureRow {
                 label: "Advanced";
                 expanded: root.advanced-open;
                 reduced-motion: root.reduced-motion;
-                toggled => { root.advanced-open = !root.advanced-open; }
+                toggled => {
+                    root.ui-sound-requested(root.advanced-open ? "collapse" : "expand");
+                    root.advanced-open = !root.advanced-open;
+                }
             }
 
             advanced-content := Rectangle {
-                min-height: root.advanced-open ? 54px : 0px;
-                max-height: root.advanced-open ? 54px : 0px;
+                min-height: root.advanced-open ? 82px : 0px;
+                max-height: root.advanced-open ? 82px : 0px;
                 opacity: root.advanced-open ? 1 : 0;
                 clip: true;
                 background: transparent;
@@ -639,34 +647,60 @@ export component AppWindow inherits Window {
                     easing: ease-out;
                 }
 
-                HorizontalLayout {
+                VerticalLayout {
                     padding-left: 12px;
                     padding-right: 2px;
-                    spacing: 12px;
-                    cross-axis-alignment: center;
+                    spacing: 2px;
 
-                    VerticalLayout {
-                        spacing: 1px;
-                        Text { text: "Precision mode"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                        Text { text: "Reduce pointer speed for fine movement"; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                    Rectangle {
+                        min-height: 40px;
+                        max-height: 40px;
+                        background: transparent;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            cross-axis-alignment: center;
+                            VerticalLayout {
+                                spacing: 1px;
+                                Text { text: "Precision mode"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
+                                Text { text: "Reduce pointer speed for fine movement"; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            GlassToggle {
+                                enabled: root.advanced-open;
+                                a11y-label: "Precision mode";
+                                checked <=> root.precision-enabled;
+                                reduced-motion: root.reduced-motion;
+                                toggled(checked) => {
+                                    root.precision-toggled(checked);
+                                    root.mark-saved();
+                                }
+                            }
+                        }
                     }
 
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
-
-                    Text {
-                        text: root.precision-enabled ? "On" : "Off";
-                        color: NumFlowTheme.secondary-label;
-                        font-size: 10px;
-                    }
-
-                    GlassToggle {
-                        enabled: root.advanced-open;
-                        a11y-label: "Precision mode";
-                        checked <=> root.precision-enabled;
-                        reduced-motion: root.reduced-motion;
-                        toggled(checked) => {
-                            root.precision-toggled(checked);
-                            root.mark-saved();
+                    Rectangle {
+                        min-height: 40px;
+                        max-height: 40px;
+                        background: transparent;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            cross-axis-alignment: center;
+                            VerticalLayout {
+                                spacing: 1px;
+                                Text { text: "Interface sounds"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
+                                Text { text: "Glass feedback for meaningful state changes"; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            GlassToggle {
+                                enabled: root.advanced-open;
+                                a11y-label: "Interface sounds";
+                                checked <=> root.sounds-enabled;
+                                reduced-motion: root.reduced-motion;
+                                toggled(checked) => {
+                                    root.sounds-toggled(checked);
+                                    root.mark-saved();
+                                }
+                            }
                         }
                     }
                 }
@@ -676,7 +710,7 @@ export component AppWindow inherits Window {
 
             Separator { }
 
-            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
+            Rectangle { min-height: 8px; max-height: 8px; background: transparent; }
 
             Rectangle {
                 min-height: 34px;
@@ -700,6 +734,7 @@ export component AppWindow inherits Window {
                         reduced-motion: root.reduced-motion;
                         toggled(checked) => {
                             root.hud-toggled(checked);
+                            root.ui-sound-requested(checked ? "toggle-on" : "toggle-off");
                             root.mark-saved();
                         }
                     }
@@ -719,7 +754,7 @@ export component AppWindow inherits Window {
                         reduced-motion: root.reduced-motion;
                         text: "Bindings…";
                         min-width: 82px;
-                        clicked => { bindings-panel.show(); }
+                        clicked => { root.ui-sound-requested("open"); bindings-panel.show(); }
                     }
 
                     UtilityButton {
@@ -728,7 +763,7 @@ export component AppWindow inherits Window {
                         text: "⋯";
                         min-width: 34px;
                         max-width: 34px;
-                        clicked => { more-menu.show(); }
+                        clicked => { root.ui-sound-requested("open"); more-menu.show(); }
                     }
                 }
             }

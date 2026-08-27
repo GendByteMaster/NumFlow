@@ -8,6 +8,7 @@ pub struct RuntimeConfig {
     pub bindings: Bindings,
     pub selected_button: MouseButton,
     pub precision: bool,
+    pub sounds_enabled: bool,
 }
 
 impl RuntimeConfig {
@@ -23,6 +24,44 @@ impl RuntimeConfig {
             bindings,
             selected_button,
             precision,
+            sounds_enabled: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_sounds_enabled(mut self, enabled: bool) -> Self {
+        self.sounds_enabled = enabled;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiSoundCue {
+    Open,
+    Close,
+    Expand,
+    Collapse,
+    ToggleOn,
+    ToggleOff,
+    Select,
+    Delete,
+    Error,
+}
+
+impl UiSoundCue {
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "open" => Some(Self::Open),
+            "close" => Some(Self::Close),
+            "expand" => Some(Self::Expand),
+            "collapse" => Some(Self::Collapse),
+            "toggle-on" => Some(Self::ToggleOn),
+            "toggle-off" => Some(Self::ToggleOff),
+            "select" => Some(Self::Select),
+            "delete" => Some(Self::Delete),
+            "error" => Some(Self::Error),
+            _ => None,
         }
     }
 }
@@ -77,7 +116,7 @@ mod platform {
         KeyboardHookEvent, NormalizedKeyEvent, WindowsPointer,
     };
 
-    use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot};
+    use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot, UiSoundCue};
 
     const MOTION_TICK: Duration = Duration::from_millis(8);
     const COMMAND_QUEUE_CAPACITY: usize = 64;
@@ -92,6 +131,8 @@ mod platform {
         Configure(RuntimeConfig),
         SetMotionConfig(numflow_core::MotionConfig),
         SetBindings(numflow_core::Bindings),
+        SetSoundsEnabled(bool),
+        PlaySound(UiSoundCue),
         Shutdown,
     }
 
@@ -189,6 +230,14 @@ mod platform {
 
         pub fn set_bindings(&self, bindings: numflow_core::Bindings) -> Result<(), RuntimeError> {
             self.send(RuntimeCommand::SetBindings(bindings))
+        }
+
+        pub fn set_sounds_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::SetSoundsEnabled(enabled))
+        }
+
+        pub fn play_sound(&self, cue: UiSoundCue) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::PlaySound(cue))
         }
 
         #[must_use]
@@ -456,6 +505,19 @@ mod platform {
         Err(last_error.unwrap_or_else(|| "keyboard hook initialization failed".to_owned()))
     }
 
+    fn start_audio_feedback(enabled: bool) -> Option<AudioFeedbackService> {
+        match AudioFeedbackService::start() {
+            Ok(service) => {
+                service.set_enabled(enabled);
+                Some(service)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "NumFlow audio feedback is unavailable");
+                None
+            }
+        }
+    }
+
     fn worker_main(
         config: RuntimeConfig,
         command_receiver: &Receiver<RuntimeCommand>,
@@ -471,13 +533,7 @@ mod platform {
         };
         hook.set_interception_enabled(false);
 
-        let audio_feedback = match AudioFeedbackService::start() {
-            Ok(service) => Some(service),
-            Err(error) => {
-                tracing::warn!(%error, "NumFlow audio feedback is unavailable");
-                None
-            }
-        };
+        let audio_feedback = start_audio_feedback(config.sounds_enabled);
         let mut normalizer = KeyboardEventNormalizer::default();
         let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
         let startup_effects = match apply_num_lock_mode(&mut machine, hook.num_lock_on()) {
@@ -509,6 +565,7 @@ mod platform {
                             &hook,
                             &mut normalizer,
                             event_sink,
+                            audio_feedback.as_ref(),
                         );
                     }
                     recv(keyboard_receiver) -> event => {
@@ -545,6 +602,7 @@ mod platform {
                             &hook,
                             &mut normalizer,
                             event_sink,
+                            audio_feedback.as_ref(),
                         );
                     }
                     recv(keyboard_receiver) -> event => {
@@ -569,6 +627,7 @@ mod platform {
         hook: &KeyboardHook,
         normalizer: &mut KeyboardEventNormalizer,
         event_sink: &RuntimeEventSink,
+        audio_feedback: Option<&AudioFeedbackService>,
     ) -> bool {
         match command {
             Ok(RuntimeCommand::Shutdown) => {
@@ -592,7 +651,9 @@ mod platform {
                 false
             }
             Ok(command) => {
-                if let Err(error) = apply_command(command, machine, hook, normalizer) {
+                if let Err(error) =
+                    apply_command(command, machine, hook, normalizer, audio_feedback)
+                {
                     fail_safe(machine, hook, normalizer, event_sink, &error);
                 }
                 true
@@ -670,6 +731,9 @@ mod platform {
             Ok(effects) => {
                 hook.set_interception_enabled(machine.enabled());
                 if !effects.is_empty() {
+                    if let Some(audio_feedback) = audio_feedback {
+                        audio_feedback.play_effects(&effects);
+                    }
                     event_sink.send(RuntimeEvent::Effects {
                         state: machine.snapshot(),
                         effects,
@@ -688,6 +752,7 @@ mod platform {
         machine: &mut RuntimeMachine<WindowsPointer>,
         hook: &KeyboardHook,
         normalizer: &mut KeyboardEventNormalizer,
+        audio_feedback: Option<&AudioFeedbackService>,
     ) -> Result<(), String> {
         match command {
             RuntimeCommand::SetEnabled(enabled) => {
@@ -709,9 +774,12 @@ mod platform {
                 ) {
                     return Ok(());
                 }
-                machine
+                let effects = machine
                     .apply_action(action)
                     .map_err(|error| error.to_string())?;
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.play_effects(&effects);
+                }
                 if !machine.enabled() {
                     machine.motion.stop();
                     normalizer.reset();
@@ -719,6 +787,9 @@ mod platform {
                 hook.set_interception_enabled(machine.enabled());
             }
             RuntimeCommand::Configure(config) => {
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.set_enabled(config.sounds_enabled);
+                }
                 machine
                     .configure(config)
                     .map_err(|error| error.to_string())?;
@@ -729,6 +800,26 @@ mod platform {
             RuntimeCommand::SetBindings(bindings) => {
                 machine.set_bindings(bindings);
                 normalizer.reset();
+            }
+            RuntimeCommand::SetSoundsEnabled(enabled) => {
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.set_enabled(enabled);
+                }
+            }
+            RuntimeCommand::PlaySound(cue) => {
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.play(match cue {
+                        UiSoundCue::Open => AudioCue::Open,
+                        UiSoundCue::Close => AudioCue::Close,
+                        UiSoundCue::Expand => AudioCue::Expand,
+                        UiSoundCue::Collapse => AudioCue::Collapse,
+                        UiSoundCue::ToggleOn => AudioCue::ToggleOn,
+                        UiSoundCue::ToggleOff => AudioCue::ToggleOff,
+                        UiSoundCue::Select => AudioCue::Select,
+                        UiSoundCue::Delete => AudioCue::Delete,
+                        UiSoundCue::Error => AudioCue::Error,
+                    });
+                }
             }
             RuntimeCommand::Shutdown => unreachable!("shutdown is handled by the worker loop"),
         }
@@ -1208,6 +1299,14 @@ impl BackgroundRuntime {
     }
 
     pub fn set_bindings(&self, _bindings: Bindings) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn set_sounds_enabled(&self, _enabled: bool) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn play_sound(&self, _cue: UiSoundCue) -> Result<(), RuntimeError> {
         Ok(())
     }
 
