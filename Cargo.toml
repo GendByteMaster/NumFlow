@@ -28,7 +28,11 @@ crossbeam-channel = "0.5"
 numflow-windows = { path = "crates/numflow-windows" }
 
 [build-dependencies]
+ico = "0.5"
+resvg = "0.47"
 slint-build = "1.17.1"
+tiny-skia = { version = "0.12", features = ["png-format"] }
+winresource = "0.1"
 
 [profile.release]
 lto = "thin"
