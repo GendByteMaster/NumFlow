@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="NumFlow"
+    Manufacturer="GendByteMaster"
+    Version="$(ProductVersion)"
+    Language="1033"
+    UpgradeCode="{7F9CE574-3373-4A83-9AFD-1FE468493DE0}"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="NumFlow">
+        <Component Id="NumFlowExecutable" Guid="*">
+          <File Id="NumFlowExe" Source="$(NumFlowExe)" KeyPath="yes">
+            <Shortcut
+              Id="NumFlowStartMenuShortcut"
+              Directory="ProgramMenuFolder"
+              Name="NumFlow"
+              Description="Precise pointer control from your keyboard"
+              WorkingDirectory="INSTALLFOLDER" />
+          </File>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="MainFeature" Title="NumFlow" Level="1">
+      <ComponentRef Id="NumFlowExecutable" />
+    </Feature>
+  </Package>
+</Wix>
