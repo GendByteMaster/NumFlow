@@ -38,18 +38,6 @@ jobs:
             throw "Expected startup interception assignment was not found"
           }
           $text = $text.Replace($old, $new)
-
-          $oldDoc = '    /// Starts the global low-level keyboard hook with a bounded event queue.'
-          $newDoc = @'
-    /// Starts the global low-level keyboard hook with a bounded event queue.
-    ///
-    /// Interception starts disabled and must be enabled explicitly after the application runtime
-    /// is ready. This avoids consuming NumPad input during startup before NumFlow is enabled.
-'@
-          if (-not $text.Contains($oldDoc)) {
-            throw "Expected hook documentation marker was not found"
-          }
-          $text = $text.Replace($oldDoc, $newDoc.TrimEnd())
           Set-Content -Path $path -Value $text -NoNewline
 
       - name: Formatting
