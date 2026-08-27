@@ -1,13 +1,44 @@
-export component AppTray inherits SystemTrayIcon {
-    icon: @image-url("../assets/numflow-icon.svg");
-    title: "NumFlow";
-    tooltip: root.numflow-enabled
-        ? "NumFlow · On · Num Lock controlled · Running in background"
-        : "NumFlow · Off · Num Lock controlled · Running in background";
+import { MouseButtonMode } from "app.slint";
 
-    in-out property <bool> numflow-enabled: true;
+export component AppTray inherits SystemTrayIcon {
+    in-out property <bool> numflow-enabled: false;
+    in-out property <MouseButtonMode> active-button: MouseButtonMode.left;
+    in-out property <bool> button-held: false;
+    in-out property <MouseButtonMode> held-button: MouseButtonMode.left;
     in-out property <bool> start-minimized: false;
     in-out property <bool> start-with-windows: false;
+
+    private property <string> active-button-label:
+        root.active-button == MouseButtonMode.left ? "Left" :
+        root.active-button == MouseButtonMode.right ? "Right" : "Middle";
+
+    private property <string> held-button-label:
+        root.held-button == MouseButtonMode.left ? "Left" :
+        root.held-button == MouseButtonMode.right ? "Right" : "Middle";
+
+    private property <image> status-icon:
+        !root.numflow-enabled
+            ? @image-url("../assets/icons/numflow/tray-mouse-off.svg")
+            : root.button-held
+                ? root.held-button == MouseButtonMode.left
+                    ? @image-url("../assets/icons/numflow/tray-mouse-left-held.svg")
+                    : root.held-button == MouseButtonMode.right
+                        ? @image-url("../assets/icons/numflow/tray-mouse-right-held.svg")
+                        : @image-url("../assets/icons/numflow/tray-mouse-middle-held.svg")
+                : root.active-button == MouseButtonMode.left
+                    ? @image-url("../assets/icons/numflow/tray-mouse-left.svg")
+                    : root.active-button == MouseButtonMode.right
+                        ? @image-url("../assets/icons/numflow/tray-mouse-right.svg")
+                        : @image-url("../assets/icons/numflow/tray-mouse-middle.svg");
+
+    icon: root.status-icon;
+    title: "NumFlow";
+    tooltip:
+        !root.numflow-enabled
+            ? "NumFlow · Off · Num Lock On · NumPad numbers"
+            : root.button-held
+                ? "NumFlow · On · " + root.held-button-label + " held · Num Lock Off"
+                : "NumFlow · On · " + root.active-button-label + " selected · Num Lock Off";
 
     callback open-settings();
     callback enabled-toggled(bool);
@@ -15,24 +46,29 @@ export component AppTray inherits SystemTrayIcon {
     callback start-with-windows-toggled(bool);
     callback exit-requested();
 
-    clicked => {
-        root.open-settings();
-    }
+    clicked => { root.open-settings(); }
 
     Menu {
         MenuItem {
             title: "Open NumFlow";
-            activated => {
-                root.open-settings();
-            }
+            activated => { root.open-settings(); }
         }
 
         MenuSeparator {}
 
         MenuItem {
-            title: root.numflow-enabled ? "NumFlow On · Num Lock controlled" : "NumFlow Off · Num Lock controlled";
+            title: root.numflow-enabled
+                ? "NumFlow On · Num Lock Off · Pointer control"
+                : "NumFlow Off · Num Lock On · Numbers";
             checkable: true;
             checked: root.numflow-enabled;
+            enabled: false;
+        }
+
+        MenuItem {
+            title: root.button-held
+                ? "Mouse · " + root.held-button-label + " held"
+                : "Mouse · " + root.active-button-label + " selected";
             enabled: false;
         }
 
@@ -67,9 +103,7 @@ export component AppTray inherits SystemTrayIcon {
 
         MenuItem {
             title: "Exit NumFlow";
-            activated => {
-                root.exit-requested();
-            }
+            activated => { root.exit-requested(); }
         }
     }
 }

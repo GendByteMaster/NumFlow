@@ -306,6 +306,20 @@ fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
 
 fn sync_tray_from_settings(tray: &AppTray, settings: &UiSettings) {
     tray.set_numflow_enabled(settings.enabled());
+    tray.set_active_button(map_mouse_button_to_ui(
+        settings.controller.selected_button(),
+    ));
+
+    if let Some(held_button) = settings.held_button() {
+        tray.set_button_held(true);
+        tray.set_held_button(map_mouse_button_to_ui(held_button));
+    } else {
+        tray.set_button_held(false);
+        tray.set_held_button(map_mouse_button_to_ui(
+            settings.controller.selected_button(),
+        ));
+    }
+
     tray.set_start_minimized(settings.start_minimized());
     tray.set_start_with_windows(settings.start_with_windows());
 }
