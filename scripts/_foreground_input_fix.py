@@ -69,8 +69,8 @@ app_path = Path("src/app.rs")
 app = app_path.read_text(encoding="utf-8")
 app = replace_once(
     app,
-    '''    let event_loop_result = slint::run_event_loop();\n''',
-    '''    #[cfg(windows)]\n    slint::Timer::single_shot(std::time::Duration::ZERO, || {\n        if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {\n            tracing::warn!(\n                %error,\n                "failed to remove winit raw-keyboard registration; foreground NumPad interception may be unavailable"\n            );\n        } else {\n            tracing::debug!(\n                "removed winit raw-keyboard registration for foreground WH_KEYBOARD_LL compatibility"\n            );\n        }\n    });\n\n    let event_loop_result = slint::run_event_loop();\n''',
-    "event-loop compatibility scheduling",
+    '''    let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;\n    sync_window_from_settings(&window, &settings.borrow());\n''',
+    '''    let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;\n\n    #[cfg(windows)]\n    if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {\n        tracing::warn!(\n            %error,\n            "failed to remove winit raw-keyboard registration; foreground NumPad interception may be unavailable"\n        );\n    } else {\n        tracing::debug!(\n            "removed winit raw-keyboard registration for foreground WH_KEYBOARD_LL compatibility"\n        );\n    }\n\n    sync_window_from_settings(&window, &settings.borrow());\n''',
+    "post-window raw-keyboard compatibility",
 )
 app_path.write_text(app, encoding="utf-8")
