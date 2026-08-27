@@ -37,7 +37,7 @@ impl BindingChoice {
     }
 }
 
-pub(crate) const BINDING_CHOICES: [BindingChoice; 21] = [
+pub(crate) const BINDING_CHOICES: [BindingChoice; 18] = [
     BindingChoice::Unbound,
     BindingChoice::Action(InputActionConfig::Move(DirectionConfig::Up)),
     BindingChoice::Action(InputActionConfig::Move(DirectionConfig::Down)),
@@ -54,9 +54,6 @@ pub(crate) const BINDING_CHOICES: [BindingChoice; 21] = [
     BindingChoice::Action(InputActionConfig::SelectButton(MouseButtonConfig::Left)),
     BindingChoice::Action(InputActionConfig::SelectButton(MouseButtonConfig::Right)),
     BindingChoice::Action(InputActionConfig::SelectButton(MouseButtonConfig::Middle)),
-    BindingChoice::Action(InputActionConfig::ToggleEnabled),
-    BindingChoice::Action(InputActionConfig::SetEnabled(true)),
-    BindingChoice::Action(InputActionConfig::SetEnabled(false)),
     BindingChoice::Action(InputActionConfig::SetPrecision(true)),
     BindingChoice::Action(InputActionConfig::SetPrecision(false)),
 ];

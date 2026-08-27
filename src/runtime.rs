@@ -70,11 +70,11 @@ mod platform {
     use crossbeam_channel::{Receiver, Sender, TrySendError};
     use numflow_core::{
         ClickKind, ControllerState, CoreEffect, InputAction, MotionEngine, MotionModifiers,
-        PointerBackend, PointerEffect, StateChange,
+        PointerBackend, PointerEffect,
     };
     use numflow_windows::{
-        KeyState, KeyboardEventNormalizer, KeyboardHook, NormalizedKeyEvent, PhysicalKeyEvent,
-        WindowsPointer,
+        AudioCue, AudioFeedbackService, KeyState, KeyboardEventNormalizer, KeyboardHook,
+        KeyboardHookEvent, NormalizedKeyEvent, WindowsPointer,
     };
 
     use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot};
@@ -307,6 +307,12 @@ mod platform {
             }
 
             if event.state == KeyState::Pressed {
+                if matches!(
+                    event.action,
+                    InputAction::ToggleEnabled | InputAction::SetEnabled(_)
+                ) {
+                    return Ok(Vec::new());
+                }
                 self.apply_action(event.action)
             } else {
                 Ok(Vec::new())
@@ -371,8 +377,29 @@ mod platform {
         };
         hook.set_interception_enabled(false);
 
+        let audio_feedback = match AudioFeedbackService::start() {
+            Ok(service) => Some(service),
+            Err(error) => {
+                tracing::warn!(%error, "NumFlow audio feedback is unavailable");
+                None
+            }
+        };
         let mut normalizer = KeyboardEventNormalizer::default();
         let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
+        let startup_effects = match apply_num_lock_mode(&mut machine, hook.num_lock_on()) {
+            Ok(effects) => effects,
+            Err(error) => {
+                let _ = ready_sender.send(Err(error.to_string()));
+                return;
+            }
+        };
+        hook.set_interception_enabled(machine.enabled());
+        if !startup_effects.is_empty() {
+            event_sink.send(RuntimeEvent::Effects {
+                state: machine.snapshot(),
+                effects: startup_effects,
+            });
+        }
         let _ = ready_sender.send(Ok(()));
         let motion_tick = crossbeam_channel::tick(MOTION_TICK);
         let mut previous_tick = Instant::now();
@@ -397,6 +424,7 @@ mod platform {
                             &hook,
                             &mut normalizer,
                             event_sink,
+                            audio_feedback.as_ref(),
                         );
                     }
                     recv(motion_tick) -> _ => {
@@ -432,6 +460,7 @@ mod platform {
                             &hook,
                             &mut normalizer,
                             event_sink,
+                            audio_feedback.as_ref(),
                         );
                     }
                 }
@@ -483,11 +512,12 @@ mod platform {
     }
 
     fn handle_keyboard_message(
-        event: Result<PhysicalKeyEvent, crossbeam_channel::RecvError>,
+        event: Result<KeyboardHookEvent, crossbeam_channel::RecvError>,
         machine: &mut RuntimeMachine<WindowsPointer>,
         hook: &KeyboardHook,
         normalizer: &mut KeyboardEventNormalizer,
         event_sink: &RuntimeEventSink,
+        audio_feedback: Option<&AudioFeedbackService>,
     ) -> bool {
         let Ok(event) = event else {
             fail_safe(
@@ -499,18 +529,41 @@ mod platform {
             );
             return false;
         };
+
+        let event = match event {
+            KeyboardHookEvent::NumLockChanged { num_lock_on } => {
+                normalizer.reset();
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.play(if num_lock_on {
+                        AudioCue::NumFlowOff
+                    } else {
+                        AudioCue::NumFlowOn
+                    });
+                }
+
+                match apply_num_lock_mode(machine, num_lock_on) {
+                    Ok(effects) => {
+                        hook.set_interception_enabled(machine.enabled());
+                        event_sink.send(RuntimeEvent::Effects {
+                            state: machine.snapshot(),
+                            effects,
+                        });
+                    }
+                    Err(error) => {
+                        fail_safe(machine, hook, normalizer, event_sink, &error.to_string());
+                    }
+                }
+                return true;
+            }
+            KeyboardHookEvent::Key(event) => event,
+        };
+
         let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {
             return true;
         };
 
         match machine.handle_key_event(normalized_event) {
             Ok(effects) => {
-                if effects
-                    .iter()
-                    .any(|effect| matches!(effect, CoreEffect::State(StateChange::Enabled(false))))
-                {
-                    normalizer.reset();
-                }
                 hook.set_interception_enabled(machine.enabled());
                 if !effects.is_empty() {
                     event_sink.send(RuntimeEvent::Effects {
@@ -534,6 +587,12 @@ mod platform {
     ) -> Result<(), String> {
         match command {
             RuntimeCommand::Apply(action) => {
+                if matches!(
+                    action,
+                    InputAction::ToggleEnabled | InputAction::SetEnabled(_)
+                ) {
+                    return Ok(());
+                }
                 machine
                     .apply_action(action)
                     .map_err(|error| error.to_string())?;
@@ -558,6 +617,14 @@ mod platform {
             RuntimeCommand::Shutdown => unreachable!("shutdown is handled by the worker loop"),
         }
         Ok(())
+    }
+
+    fn apply_num_lock_mode<B: PointerBackend>(
+        machine: &mut RuntimeMachine<B>,
+        num_lock_on: bool,
+    ) -> Result<Vec<CoreEffect>, B::Error> {
+        machine.motion.stop();
+        machine.apply_action(InputAction::SetEnabled(!num_lock_on))
     }
 
     fn fail_safe(
@@ -595,11 +662,12 @@ mod platform {
         use std::{convert::Infallible, time::Duration};
 
         use numflow_core::{
-            Bindings, Direction, InputAction, MotionConfig, MouseButton, NumpadKey, PointerBackend,
+            Bindings, CoreEffect, Direction, InputAction, MotionConfig, MouseButton, NumpadKey,
+            PointerBackend, StateChange,
         };
         use numflow_windows::{KeyState, NormalizedKeyEvent};
 
-        use super::{RuntimeEventSink, RuntimeMachine};
+        use super::{RuntimeEventSink, RuntimeMachine, apply_num_lock_mode};
         use crate::runtime::{RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot};
 
         #[derive(Debug, Default)]
@@ -714,6 +782,60 @@ mod platform {
             assert!(machine.pointer.held.is_empty());
             assert!(!effects.is_empty());
             assert_eq!(machine.pointer.releases, 1);
+        }
+
+        #[test]
+        fn num_lock_on_disables_runtime_and_releases_drag() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+            machine
+                .apply_action(InputAction::Hold)
+                .expect("mock is infallible");
+            machine.motion.press(Direction::Right);
+            assert!(machine.enabled());
+            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
+
+            let effects = apply_num_lock_mode(&mut machine, true).expect("mock is infallible");
+
+            assert!(!machine.enabled());
+            assert!(!machine.motion.is_moving());
+            assert!(machine.pointer.held.is_empty());
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, CoreEffect::State(StateChange::Enabled(false))))
+            );
+        }
+
+        #[test]
+        fn num_lock_off_enables_runtime() {
+            let mut machine = runtime_machine();
+            let effects = apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+
+            assert!(machine.enabled());
+            assert!(
+                effects
+                    .iter()
+                    .any(|effect| matches!(effect, CoreEffect::State(StateChange::Enabled(true))))
+            );
+        }
+
+        #[test]
+        fn mapped_enable_actions_do_not_override_num_lock_mode() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+
+            let effects = machine
+                .handle_key_event(NormalizedKeyEvent {
+                    key: NumpadKey::Num5,
+                    action: InputAction::SetEnabled(false),
+                    state: KeyState::Pressed,
+                    repeated: false,
+                })
+                .expect("mock is infallible");
+
+            assert!(effects.is_empty());
+            assert!(machine.enabled());
         }
 
         #[test]

@@ -178,10 +178,8 @@ export component AppWindow inherits Window {
 
             Switch {
                 text: root.numflow-enabled ? "On" : "Off";
-                checked <=> root.numflow-enabled;
-                toggled => {
-                    root.enabled-toggled(self.checked);
-                }
+                checked: root.numflow-enabled;
+                enabled: false;
             }
         }
 
@@ -197,7 +195,7 @@ export component AppWindow inherits Window {
                     icon-source: root.numflow-enabled
                         ? @image-url("../assets/icons/numflow/power-on.svg")
                         : @image-url("../assets/icons/numflow/power-off.svg");
-                    title: "NumFlow";
+                    title: "NumFlow · Num Lock controlled";
                     value: root.numflow-enabled ? "On" : "Off";
                 }
 

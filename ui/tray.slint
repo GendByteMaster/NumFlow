@@ -2,8 +2,8 @@ export component AppTray inherits SystemTrayIcon {
     icon: @image-url("../assets/numflow-icon.svg");
     title: "NumFlow";
     tooltip: root.numflow-enabled
-        ? "NumFlow · On · Running in background"
-        : "NumFlow · Off · Running in background";
+        ? "NumFlow · On · Num Lock controlled · Running in background"
+        : "NumFlow · Off · Num Lock controlled · Running in background";
 
     in-out property <bool> numflow-enabled: true;
     in-out property <bool> start-minimized: false;
@@ -30,13 +30,10 @@ export component AppTray inherits SystemTrayIcon {
         MenuSeparator {}
 
         MenuItem {
-            title: root.numflow-enabled ? "NumFlow On" : "NumFlow Off";
+            title: root.numflow-enabled ? "NumFlow On · Num Lock controlled" : "NumFlow Off · Num Lock controlled";
             checkable: true;
             checked: root.numflow-enabled;
-            activated => {
-                root.numflow-enabled = !root.numflow-enabled;
-                root.enabled-toggled(root.numflow-enabled);
-            }
+            enabled: false;
         }
 
         MenuItem {

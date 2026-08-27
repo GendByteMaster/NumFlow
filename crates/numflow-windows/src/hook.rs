@@ -13,10 +13,13 @@ use windows::{
     Win32::{
         Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
-        UI::WindowsAndMessaging::{
-            CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
-            PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-            WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        UI::{
+            Input::KeyboardAndMouse::{GetKeyState, VK_NUMLOCK},
+            WindowsAndMessaging::{
+                CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
+                PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+                WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            },
         },
     },
     core::Error as WindowsError,
@@ -25,8 +28,22 @@ use windows::{
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
-static EVENT_SENDER: OnceLock<Mutex<Option<Sender<PhysicalKeyEvent>>>> = OnceLock::new();
+static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
+static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
+static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardHookEvent {
+    Key(PhysicalKeyEvent),
+    NumLockChanged { num_lock_on: bool },
+}
+
+#[derive(Debug)]
+struct HookDispatcher {
+    sender: Sender<KeyboardHookEvent>,
+    overflow_reader: Receiver<KeyboardHookEvent>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
@@ -60,7 +77,7 @@ impl KeyboardHook {
     /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
     /// installed, another `NumFlow` hook is already active, or the hook thread exits before setup
     /// completes.
-    pub fn start() -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
+    pub fn start() -> Result<(Self, Receiver<KeyboardHookEvent>), HookError> {
         Self::start_with_capacity(DEFAULT_QUEUE_CAPACITY)
     }
 
@@ -76,14 +93,15 @@ impl KeyboardHook {
     /// completes.
     pub fn start_with_capacity(
         queue_capacity: usize,
-    ) -> Result<(Self, Receiver<PhysicalKeyEvent>), HookError> {
+    ) -> Result<(Self, Receiver<KeyboardHookEvent>), HookError> {
         let capacity = queue_capacity.max(1);
         let (event_sender, event_receiver) = crossbeam_channel::bounded(capacity);
+        let event_overflow_reader = event_receiver.clone();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
 
         let join = thread::Builder::new()
             .name("numflow-keyboard-hook".to_owned())
-            .spawn(move || hook_thread(event_sender, &ready_sender))
+            .spawn(move || hook_thread(event_sender, event_overflow_reader, &ready_sender))
             .map_err(HookError::ThreadSpawn)?;
 
         let thread_id = match ready_receiver.recv() {
@@ -114,12 +132,18 @@ impl KeyboardHook {
         INTERCEPTION_ENABLED.load(Ordering::Acquire)
     }
 
+    #[must_use]
+    pub fn num_lock_on(&self) -> bool {
+        NUM_LOCK_ON.load(Ordering::Acquire)
+    }
+
     pub fn set_interception_enabled(&self, enabled: bool) {
-        INTERCEPTION_ENABLED.store(enabled, Ordering::Release);
+        let should_intercept = enabled && !self.num_lock_on();
+        INTERCEPTION_ENABLED.store(should_intercept, Ordering::Release);
     }
 
     pub fn emergency_disable(&self) {
-        self.set_interception_enabled(false);
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
     }
 
     /// Disables interception, requests message-loop shutdown, and joins the hook thread.
@@ -166,13 +190,17 @@ impl Drop for KeyboardHook {
 }
 
 fn hook_thread(
-    event_sender: Sender<PhysicalKeyEvent>,
+    event_sender: Sender<KeyboardHookEvent>,
+    event_overflow_reader: Receiver<KeyboardHookEvent>,
     ready_sender: &SyncSender<Result<u32, HookError>>,
 ) -> Result<(), HookError> {
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut message = MSG::default();
 
     let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
+    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
+    NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
+    NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
 
     let module = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => module,
@@ -197,21 +225,21 @@ fn hook_thread(
         }
     };
 
-    if !register_sender(event_sender) {
+    if !register_dispatcher(event_sender, event_overflow_reader) {
         let _ = unsafe { UnhookWindowsHookEx(hook) };
         let _ = ready_sender.send(Err(HookError::AlreadyActive));
         return Ok(());
     }
 
     if ready_sender.send(Ok(thread_id)).is_err() {
-        clear_sender();
+        clear_dispatcher();
         let _ = unsafe { UnhookWindowsHookEx(hook) };
         return Ok(());
     }
 
     let loop_result = run_message_loop();
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
-    clear_sender();
+    clear_dispatcher();
     let unhook_result = unsafe { UnhookWindowsHookEx(hook) };
 
     loop_result?;
@@ -231,20 +259,26 @@ fn run_message_loop() -> Result<(), HookError> {
     }
 }
 
-fn register_sender(sender: Sender<PhysicalKeyEvent>) -> bool {
-    let dispatcher = EVENT_SENDER.get_or_init(|| Mutex::new(None));
+fn register_dispatcher(
+    sender: Sender<KeyboardHookEvent>,
+    overflow_reader: Receiver<KeyboardHookEvent>,
+) -> bool {
+    let dispatcher = EVENT_DISPATCHER.get_or_init(|| Mutex::new(None));
     let Ok(mut slot) = dispatcher.lock() else {
         return false;
     };
     if slot.is_some() {
         return false;
     }
-    *slot = Some(sender);
+    *slot = Some(HookDispatcher {
+        sender,
+        overflow_reader,
+    });
     true
 }
 
-fn clear_sender() {
-    let Some(dispatcher) = EVENT_SENDER.get() else {
+fn clear_dispatcher() {
+    let Some(dispatcher) = EVENT_DISPATCHER.get() else {
         return;
     };
     if let Ok(mut slot) = dispatcher.lock() {
@@ -252,25 +286,60 @@ fn clear_sender() {
     }
 }
 
-fn dispatch_event(event: PhysicalKeyEvent) -> bool {
-    let Some(dispatcher) = EVENT_SENDER.get() else {
+fn dispatch_event(event: KeyboardHookEvent, priority: bool) -> bool {
+    let Some(dispatcher) = EVENT_DISPATCHER.get() else {
         return false;
     };
     let Ok(slot) = dispatcher.try_lock() else {
         return false;
     };
-    let Some(sender) = slot.as_ref() else {
+    let Some(dispatcher) = slot.as_ref() else {
         return false;
     };
 
-    match sender.try_send(event) {
+    match dispatcher.sender.try_send(event) {
         Ok(()) => true,
+        Err(TrySendError::Full(event)) if priority => {
+            let _ = dispatcher.overflow_reader.try_recv();
+            dispatcher.sender.try_send(event).is_ok()
+        }
         Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
     }
 }
 
+fn num_lock_transition(
+    num_lock_on: bool,
+    key_down: bool,
+    state: KeyState,
+) -> (bool, bool, Option<bool>) {
+    match state {
+        KeyState::Pressed if !key_down => {
+            let next = !num_lock_on;
+            (next, true, Some(next))
+        }
+        KeyState::Pressed => (num_lock_on, true, None),
+        KeyState::Released => (num_lock_on, false, None),
+    }
+}
+
+fn observe_num_lock(state: KeyState) -> Option<bool> {
+    let current = NUM_LOCK_ON.load(Ordering::Acquire);
+    let key_down = NUM_LOCK_KEY_DOWN.load(Ordering::Acquire);
+    let (next, next_key_down, changed) = num_lock_transition(current, key_down, state);
+    NUM_LOCK_ON.store(next, Ordering::Release);
+    NUM_LOCK_KEY_DOWN.store(next_key_down, Ordering::Release);
+
+    if changed == Some(true) {
+        // Num Lock ON means normal number entry. Stop interception in the hook immediately;
+        // the runtime will safely release any held pointer state as it consumes the mode event.
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    }
+
+    changed
+}
+
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && INTERCEPTION_ENABLED.load(Ordering::Acquire) {
+    if code >= 0 {
         let state = match u32::try_from(wparam.0).ok() {
             Some(WM_KEYDOWN | WM_SYSKEYDOWN) => Some(KeyState::Pressed),
             Some(WM_KEYUP | WM_SYSKEYUP) => Some(KeyState::Released),
@@ -279,18 +348,60 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
         if let Some(state) = state {
             let keyboard = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
-            let event = PhysicalKeyEvent::new(
-                keyboard.vkCode,
-                keyboard.scanCode,
-                keyboard.flags.0 & LLKHF_EXTENDED.0 != 0,
-                state,
-            );
 
-            if map_numpad_key(event).is_some() && dispatch_event(event) {
-                return LRESULT(1);
+            if keyboard.vkCode == u32::from(VK_NUMLOCK.0) {
+                if let Some(num_lock_on) = observe_num_lock(state) {
+                    let _ = dispatch_event(KeyboardHookEvent::NumLockChanged { num_lock_on }, true);
+                }
+                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+            }
+
+            if INTERCEPTION_ENABLED.load(Ordering::Acquire) && !NUM_LOCK_ON.load(Ordering::Acquire)
+            {
+                let event = PhysicalKeyEvent::new(
+                    keyboard.vkCode,
+                    keyboard.scanCode,
+                    keyboard.flags.0 & LLKHF_EXTENDED.0 != 0,
+                    state,
+                );
+
+                if map_numpad_key(event).is_some()
+                    && dispatch_event(KeyboardHookEvent::Key(event), false)
+                {
+                    return LRESULT(1);
+                }
             }
         }
     }
 
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::num_lock_transition;
+    use crate::KeyState;
+
+    #[test]
+    fn num_lock_toggles_once_per_physical_press() {
+        let (on, down, changed) = num_lock_transition(true, false, KeyState::Pressed);
+        assert!(!on);
+        assert!(down);
+        assert_eq!(changed, Some(false));
+
+        let (on, down, changed) = num_lock_transition(on, down, KeyState::Pressed);
+        assert!(!on);
+        assert!(down);
+        assert_eq!(changed, None);
+
+        let (on, down, changed) = num_lock_transition(on, down, KeyState::Released);
+        assert!(!on);
+        assert!(!down);
+        assert_eq!(changed, None);
+
+        let (on, down, changed) = num_lock_transition(on, down, KeyState::Pressed);
+        assert!(on);
+        assert!(down);
+        assert_eq!(changed, Some(true));
+    }
 }
