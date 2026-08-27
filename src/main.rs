@@ -30,18 +30,7 @@ fn main() {
         }
     };
 
-    let tray = match AppTray::new() {
-        Ok(tray) => {
-            tracing::info!("NumFlow system tray ready; closing settings keeps the app running");
-            tray
-        }
-        Err(error) => {
-            tracing::error!(%error, "failed to create NumFlow system tray");
-            std::process::exit(1);
-        }
-    };
-
-    if let Err(error) = app::run(&tray) {
+    if let Err(error) = app::run() {
         tracing::error!(%error, "NumFlow terminated with an error");
         std::process::exit(1);
     }

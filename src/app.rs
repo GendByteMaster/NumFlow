@@ -813,7 +813,7 @@ fn connect_ui(
     connect_tray(window, tray, settings, hud, store, runtime);
 }
 
-pub fn run(tray: &AppTray) -> Result<(), AppError> {
+pub fn run() -> Result<(), AppError> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting NumFlow");
 
     let store = Rc::new(ConfigStore::for_current_user()?);
@@ -834,19 +834,24 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         store.save(&loaded.config)?;
     }
 
-    let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
     let settings = Rc::new(RefCell::new(UiSettings::from_config(loaded.config)));
-    sync_window_from_settings(&window, &settings.borrow());
-    sync_tray_from_settings(tray, &settings.borrow());
 
-    if !set_windows_startup(settings.borrow().start_with_windows()) {
-        tracing::warn!("configured Windows startup preference could not be applied");
-    }
-
+    // Install the low-level keyboard hook and apply the current Num Lock mode before creating
+    // any visible NumFlow UI. Once the tray icon appears, keyboard interception is already ready.
     let mut background_runtime = BackgroundRuntime::start(settings.borrow().runtime_config())
         .map_err(|error| AppError::Runtime(error.to_string()))?;
     let runtime_wake_receiver = background_runtime.take_wake_receiver();
     let runtime = Rc::new(RefCell::new(background_runtime));
+
+    let tray = AppTray::new().map_err(|error| AppError::Ui(error.to_string()))?;
+    tracing::info!("NumFlow system tray ready; keyboard runtime is already active");
+    let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
+    sync_window_from_settings(&window, &settings.borrow());
+    sync_tray_from_settings(&tray, &settings.borrow());
+
+    if !set_windows_startup(settings.borrow().start_with_windows()) {
+        tracing::warn!("configured Windows startup preference could not be applied");
+    }
 
     let hud = Rc::new(RefCell::new(
         HudController::new().map_err(|error| AppError::Ui(error.to_string()))?,
@@ -863,10 +868,10 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         "configuration and background runtime ready"
     );
 
-    connect_ui(&window, tray, &settings, &hud, &store, &runtime);
+    connect_ui(&window, &tray, &settings, &hud, &store, &runtime);
     let runtime_event_bridge = start_runtime_event_bridge(
         &window,
-        tray,
+        &tray,
         &settings,
         &hud,
         &store,
