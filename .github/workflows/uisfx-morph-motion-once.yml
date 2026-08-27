@@ -1,0 +1,107 @@
+name: One-shot NumFlow UI SFX and morph motion
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/uisfx-morph-motion-once.yml
+      - scripts/apply_uisfx_morph_motion.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Fetch UI SFX Glass cues
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --no-progress -y
+          }
+          New-Item -ItemType Directory -Force -Path assets/sfx/glass | Out-Null
+          New-Item -ItemType Directory -Force -Path .tmp/uisfx | Out-Null
+          $base = 'https://raw.githubusercontent.com/romainsimon/uisfx/main/packages/uisfx/sounds/glass'
+          $cues = @(
+            'toggle-on', 'toggle-off', 'select', 'open', 'close', 'expand', 'collapse',
+            'drag-start', 'release', 'delete', 'error'
+          )
+          foreach ($cue in $cues) {
+            $mp3 = ".tmp/uisfx/$cue.mp3"
+            $wav = "assets/sfx/glass/$cue.wav"
+            curl.exe -L --fail --silent --show-error "$base/$cue.mp3" -o $mp3
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download UI SFX cue: $cue" }
+            ffmpeg -hide_banner -loglevel error -y -i $mp3 -ac 1 -ar 22050 -c:a pcm_s16le $wav
+            if ($LASTEXITCODE -ne 0) { throw "Failed to convert UI SFX cue: $cue" }
+          }
+          Remove-Item -Recurse -Force .tmp
+
+      - name: Apply native audio and motion polish
+        run: python scripts/apply_uisfx_morph_motion.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Verify UI SFX and motion guardrails
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cues = @(
+            'toggle-on', 'toggle-off', 'select', 'open', 'close', 'expand', 'collapse',
+            'drag-start', 'release', 'delete', 'error'
+          )
+          foreach ($cue in $cues) {
+            $path = "assets/sfx/glass/$cue.wav"
+            if (-not (Test-Path $path)) { throw "Missing UI SFX WAV: $path" }
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            if ($bytes.Length -lt 44) { throw "Invalid UI SFX WAV: $path" }
+            if ([Text.Encoding]::ASCII.GetString($bytes, 0, 4) -ne 'RIFF') { throw "Missing RIFF header: $path" }
+            if ([Text.Encoding]::ASCII.GetString($bytes, 8, 4) -ne 'WAVE') { throw "Missing WAVE header: $path" }
+          }
+          if (-not (Select-String -Path crates/numflow-windows/src/audio.rs -Pattern 'PlaySoundA' -Quiet)) { throw 'Native PlaySound audio backend missing' }
+          if (Select-String -Path crates/numflow-windows/src/audio.rs -Pattern 'system_beep|Beep' -Quiet) { throw 'Synthetic Beep backend still present' }
+          if (-not (Select-String -Path src/config.rs -Pattern 'sounds_enabled' -Quiet)) { throw 'Persistent sounds preference missing' }
+          if (-not (Select-String -Path ui/app.slint -Pattern 'Interface sounds' -Quiet)) { throw 'Interface sounds control missing' }
+          if (-not (Select-String -Path ui/design-system.slint -Pattern 'ease-out-back' -Quiet)) { throw 'Spring-like easing missing' }
+          if (-not (Select-String -Path ui/design-system.slint -Pattern 'transform-rotation' -Quiet)) { throw 'Disclosure morph motion missing' }
+          if (-not (Select-String -Path ui/hud.slint -Pattern 'transform-scale' -Quiet)) { throw 'HUD morph motion missing' }
+          if (Select-String -Path ui/*.slint -Pattern 'iteration-count|animation-tick\(\)' -Quiet) { throw 'Looping decorative animation detected' }
+          if (Test-Path package.json) { throw 'Unexpected JS runtime dependency introduced' }
+
+      - name: Commit validated UI SFX and motion polish
+        shell: pwsh
+        run: |
+          Remove-Item scripts/apply_uisfx_morph_motion.py
+          Remove-Item .github/workflows/uisfx-morph-motion-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor(ui): add semantic sounds and native morph motion"
+          git push origin HEAD:dev/master
