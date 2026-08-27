@@ -97,7 +97,7 @@ impl KeyboardHook {
             }
         };
 
-        INTERCEPTION_ENABLED.store(true, Ordering::Release);
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
 
         Ok((
             Self {
