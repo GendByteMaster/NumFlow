@@ -2,7 +2,7 @@ use std::{
     io,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     thread::{self, JoinHandle},
 };
@@ -15,7 +15,6 @@ use windows::{
 };
 
 const AUDIO_QUEUE_CAPACITY: usize = 6;
-const RUNTIME_GAIN_PERCENT: i32 = 50;
 
 const TOGGLE_ON_WAV: &[u8] = include_bytes!("../../../assets/sfx/glass/toggle-on.wav");
 const TOGGLE_OFF_WAV: &[u8] = include_bytes!("../../../assets/sfx/glass/toggle-off.wav");
@@ -56,6 +55,7 @@ pub enum AudioFeedbackError {
 pub struct AudioFeedbackService {
     sender: Option<Sender<AudioCue>>,
     enabled: Arc<AtomicBool>,
+    volume_percent: Arc<AtomicU8>,
     running: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
@@ -69,8 +69,10 @@ impl AudioFeedbackService {
     pub fn start() -> Result<Self, AudioFeedbackError> {
         let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_CAPACITY);
         let enabled = Arc::new(AtomicBool::new(true));
+        let volume_percent = Arc::new(AtomicU8::new(25));
         let running = Arc::new(AtomicBool::new(true));
         let worker_running = Arc::clone(&running);
+        let worker_volume_percent = Arc::clone(&volume_percent);
 
         let join = thread::Builder::new()
             .name("numflow-audio-feedback".to_owned())
@@ -79,7 +81,7 @@ impl AudioFeedbackService {
                     if !worker_running.load(Ordering::Acquire) {
                         break;
                     }
-                    play_wave(cue);
+                    play_wave(cue, worker_volume_percent.load(Ordering::Acquire));
                 }
             })
             .map_err(AudioFeedbackError::ThreadSpawn)?;
@@ -87,6 +89,7 @@ impl AudioFeedbackService {
         Ok(Self {
             sender: Some(sender),
             enabled,
+            volume_percent,
             running,
             join: Some(join),
         })
@@ -100,6 +103,12 @@ impl AudioFeedbackService {
     #[must_use]
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    /// Sets semantic feedback volume without touching the Windows mixer.
+    pub fn set_volume_percent(&self, volume_percent: u8) {
+        self.volume_percent
+            .store(volume_percent.min(100), Ordering::Release);
     }
 
     /// Queues one short semantic cue. Stale cues are dropped instead of delaying input.
@@ -134,9 +143,14 @@ impl Drop for AudioFeedbackService {
     }
 }
 
-fn play_wave(cue: AudioCue) {
+fn play_wave(cue: AudioCue, volume_percent: u8) {
+    let volume_percent = volume_percent.min(100);
+    if volume_percent == 0 {
+        return;
+    }
+
     let mut bytes = wave_bytes(cue).to_vec();
-    attenuate_pcm16_wave(&mut bytes, RUNTIME_GAIN_PERCENT);
+    attenuate_pcm16_wave(&mut bytes, i32::from(volume_percent));
 
     // Playback is synchronous only on this dedicated audio worker. Keeping the temporary buffer
     // alive until PlaySound returns lets NumFlow apply runtime attenuation safely without touching
@@ -154,7 +168,8 @@ fn attenuate_pcm16_wave(bytes: &mut [u8], gain_percent: i32) {
         return;
     };
 
-    for sample in bytes[data_start..data_end].chunks_exact_mut(2) {
+    let (samples, _) = bytes[data_start..data_end].as_chunks_mut::<2>();
+    for sample in samples {
         let value = i32::from(i16::from_le_bytes([sample[0], sample[1]]));
         let scaled = value * gain_percent / 100;
         let encoded = i16::try_from(scaled)

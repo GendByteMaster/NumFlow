@@ -28,6 +28,7 @@ export component AppWindow inherits Window {
     in-out property <string> active-key: "";
     in-out property <bool> hud-enabled: true;
     in-out property <bool> sounds-enabled: true;
+    in-out property <float> sound-volume: 25;
     in-out property <string> active-profile: "Normal";
     in-out property <int> binding-key-index: 0;
     in-out property <int> binding-action-index: 1;
@@ -55,6 +56,7 @@ export component AppWindow inherits Window {
     callback acceleration-changed(float);
     callback hud-toggled(bool);
     callback sounds-toggled(bool);
+    callback sound-volume-changed(float);
     callback ui-sound-requested(string);
     callback profile-changed(string);
     callback binding-key-changed(int);
@@ -683,14 +685,38 @@ export component AppWindow inherits Window {
                         max-height: 40px;
                         background: transparent;
                         HorizontalLayout {
-                            spacing: 12px;
+                            spacing: 10px;
                             cross-axis-alignment: center;
                             VerticalLayout {
                                 spacing: 1px;
                                 Text { text: "Interface sounds"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                                Text { text: "Glass feedback for meaningful state changes"; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                                Text { text: "Semantic feedback volume"; color: NumFlowTheme.secondary-label; font-size: 10px; }
                             }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Slider {
+                                enabled: root.advanced-open && root.sounds-enabled;
+                                accessible-label: "Sound volume";
+                                min-width: 112px;
+                                max-width: 112px;
+                                minimum: 0;
+                                maximum: 100;
+                                step: 5;
+                                value <=> root.sound-volume;
+                                changed(value) => {
+                                    root.sound-volume-changed(value);
+                                    root.mark-saved();
+                                }
+                            }
+                            Text {
+                                text: "\{Math.round(root.sound-volume)}%";
+                                color: NumFlowTheme.secondary-label;
+                                opacity: root.sounds-enabled ? 1 : 0.45;
+                                font-size: 10px;
+                                font-weight: 500;
+                                horizontal-alignment: right;
+                                min-width: 30px;
+                                max-width: 30px;
+                            }
                             GlassToggle {
                                 enabled: root.advanced-open;
                                 a11y-label: "Interface sounds";

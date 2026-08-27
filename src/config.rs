@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 const CONFIG_FILE_NAME: &str = "config.toml";
+const DEFAULT_SOUND_VOLUME: u8 = 25;
+
+const fn default_sound_volume() -> u8 {
+    DEFAULT_SOUND_VOLUME
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigLoadStatus {
@@ -38,6 +43,8 @@ pub enum ConfigError {
     UnsupportedSchema { found: u32, expected: u32 },
     #[error("active profile `{0}` does not exist")]
     MissingActiveProfile(String),
+    #[error("interface sound volume {0}% is outside the supported 0..=100 range")]
+    InvalidSoundVolume(u8),
     #[error("profile `{profile}` contains duplicate binding for {key:?}")]
     DuplicateBinding {
         profile: String,
@@ -77,6 +84,8 @@ pub struct AppConfig {
     pub hud_enabled: bool,
     #[serde(default)]
     pub sounds_enabled: InterfaceSoundsEnabled,
+    #[serde(default = "default_sound_volume")]
+    pub sound_volume: u8,
     pub start_minimized: bool,
     pub start_with_windows: bool,
     pub profiles: BTreeMap<String, ProfileConfig>,
@@ -134,6 +143,7 @@ impl Default for AppConfig {
             active_profile: "Normal".to_owned(),
             hud_enabled: true,
             sounds_enabled: InterfaceSoundsEnabled::ENABLED,
+            sound_volume: DEFAULT_SOUND_VOLUME,
             start_minimized: false,
             start_with_windows: false,
             profiles,
@@ -148,6 +158,10 @@ impl AppConfig {
                 found: self.schema_version,
                 expected: CONFIG_SCHEMA_VERSION,
             });
+        }
+
+        if self.sound_volume > 100 {
+            return Err(ConfigError::InvalidSoundVolume(self.sound_volume));
         }
 
         if !self.profiles.contains_key(&self.active_profile) {

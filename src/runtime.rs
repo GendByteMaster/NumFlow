@@ -9,6 +9,7 @@ pub struct RuntimeConfig {
     pub selected_button: MouseButton,
     pub precision: bool,
     pub sounds_enabled: bool,
+    pub sound_volume: u8,
 }
 
 impl RuntimeConfig {
@@ -25,12 +26,19 @@ impl RuntimeConfig {
             selected_button,
             precision,
             sounds_enabled: true,
+            sound_volume: 25,
         }
     }
 
     #[must_use]
     pub const fn with_sounds_enabled(mut self, enabled: bool) -> Self {
         self.sounds_enabled = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_sound_volume(mut self, volume_percent: u8) -> Self {
+        self.sound_volume = volume_percent.min(100);
         self
     }
 }
@@ -132,6 +140,7 @@ mod platform {
         SetMotionConfig(numflow_core::MotionConfig),
         SetBindings(numflow_core::Bindings),
         SetSoundsEnabled(bool),
+        SetSoundVolume(u8),
         PlaySound(UiSoundCue),
         Shutdown,
     }
@@ -234,6 +243,10 @@ mod platform {
 
         pub fn set_sounds_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
             self.send(RuntimeCommand::SetSoundsEnabled(enabled))
+        }
+
+        pub fn set_sound_volume(&self, volume_percent: u8) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::SetSoundVolume(volume_percent.min(100)))
         }
 
         pub fn play_sound(&self, cue: UiSoundCue) -> Result<(), RuntimeError> {
@@ -505,10 +518,11 @@ mod platform {
         Err(last_error.unwrap_or_else(|| "keyboard hook initialization failed".to_owned()))
     }
 
-    fn start_audio_feedback(enabled: bool) -> Option<AudioFeedbackService> {
+    fn start_audio_feedback(enabled: bool, volume_percent: u8) -> Option<AudioFeedbackService> {
         match AudioFeedbackService::start() {
             Ok(service) => {
                 service.set_enabled(enabled);
+                service.set_volume_percent(volume_percent);
                 Some(service)
             }
             Err(error) => {
@@ -533,7 +547,7 @@ mod platform {
         };
         hook.set_interception_enabled(false);
 
-        let audio_feedback = start_audio_feedback(config.sounds_enabled);
+        let audio_feedback = start_audio_feedback(config.sounds_enabled, config.sound_volume);
         let mut normalizer = KeyboardEventNormalizer::default();
         let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
         let startup_effects = match apply_num_lock_mode(&mut machine, hook.num_lock_on()) {
@@ -789,6 +803,7 @@ mod platform {
             RuntimeCommand::Configure(config) => {
                 if let Some(audio_feedback) = audio_feedback {
                     audio_feedback.set_enabled(config.sounds_enabled);
+                    audio_feedback.set_volume_percent(config.sound_volume);
                 }
                 machine
                     .configure(config)
@@ -804,6 +819,11 @@ mod platform {
             RuntimeCommand::SetSoundsEnabled(enabled) => {
                 if let Some(audio_feedback) = audio_feedback {
                     audio_feedback.set_enabled(enabled);
+                }
+            }
+            RuntimeCommand::SetSoundVolume(volume_percent) => {
+                if let Some(audio_feedback) = audio_feedback {
+                    audio_feedback.set_volume_percent(volume_percent);
                 }
             }
             RuntimeCommand::PlaySound(cue) => {

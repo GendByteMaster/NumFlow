@@ -130,6 +130,14 @@ impl UiSettings {
         self.config.sounds_enabled.get()
     }
 
+    fn set_sound_volume(&mut self, volume_percent: u8) {
+        self.config.sound_volume = volume_percent.min(100);
+    }
+
+    fn sound_volume(&self) -> u8 {
+        self.config.sound_volume.min(100)
+    }
+
     fn set_start_minimized(&mut self, enabled: bool) {
         self.config.start_minimized = enabled;
     }
@@ -243,6 +251,7 @@ impl UiSettings {
             self.controller.is_precision_enabled(),
         )
         .with_sounds_enabled(self.sounds_enabled())
+        .with_sound_volume(self.sound_volume())
     }
 
     fn reset_pointer_settings(&mut self) -> Vec<CoreEffect> {
@@ -338,6 +347,7 @@ fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
     ));
     window.set_hud_enabled(settings.hud_enabled());
     window.set_sounds_enabled(settings.sounds_enabled());
+    window.set_sound_volume(f32::from(settings.sound_volume()));
     window.set_active_profile(settings.active_profile_name().into());
     sync_binding_view(window, settings);
 }
@@ -419,6 +429,16 @@ fn runtime_play_sound(runtime: &SharedRuntime, cue: UiSoundCue) {
 fn runtime_set_sounds_enabled(runtime: &SharedRuntime, enabled: bool) {
     if let Err(error) = runtime.borrow().set_sounds_enabled(enabled) {
         tracing::warn!(%error, enabled, "failed to update interface sound preference in runtime");
+    }
+}
+
+fn runtime_set_sound_volume(runtime: &SharedRuntime, volume_percent: u8) {
+    if let Err(error) = runtime.borrow().set_sound_volume(volume_percent) {
+        tracing::warn!(
+            %error,
+            volume_percent,
+            "failed to update interface sound volume in runtime"
+        );
     }
 }
 
@@ -626,6 +646,21 @@ fn connect_sound_preferences(
                 runtime_set_sounds_enabled(&runtime, false);
             }
             settings.borrow_mut().set_sounds_enabled(enabled);
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
+        window.on_sound_volume_changed(move |volume| {
+            let volume_percent = volume.round().to_u8().unwrap_or(25).min(100);
+            if settings.borrow().sound_volume() == volume_percent {
+                return;
+            }
+            settings.borrow_mut().set_sound_volume(volume_percent);
+            runtime_set_sound_volume(&runtime, volume_percent);
             persist_configuration(&settings, &store);
         });
     }
