@@ -49,7 +49,8 @@ export component HudWindow inherits Window {
         width: parent.width - 16px;
         height: parent.height - 12px;
         opacity: root.revealed ? 1 : 0;
-        background: NumFlowTheme.material;
+        // HUD translucency is clipped to the rounded card instead of the full native window.
+        background: NumFlowTheme.hud-material;
         border-width: root.persistent ? 1px : 1px;
         border-color: root.persistent ? #64d2ff82 : NumFlowTheme.glass-border;
         border-radius: 17px;

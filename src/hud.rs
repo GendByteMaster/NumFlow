@@ -5,7 +5,7 @@ use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
 
 #[cfg(windows)]
 use slint::winit_030::winit::{
-    platform::windows::{BackdropType, WindowExtWindows},
+    platform::windows::WindowExtWindows,
     raw_window_handle::{HasWindowHandle, RawWindowHandle},
 };
 
@@ -253,9 +253,9 @@ impl HudController {
 fn configure_native_hud_window(winit_window: &slint::winit_030::winit::window::Window) {
     // Winit maintains the shell-facing skip-taskbar state (including Explorer restarts).
     winit_window.set_skip_taskbar(true);
-    // TransientWindow maps to the Windows Background Acrylic system backdrop when available.
-    // Older Windows versions keep the Slint translucent material fallback.
-    winit_window.set_system_backdrop(BackdropType::TransientWindow);
+    // Do not apply Acrylic to the full rectangular HWND. The HUD itself draws a rounded,
+    // high-contrast translucent material; keeping the native window transparent avoids a
+    // visible rectangular backdrop around that card while preserving click-through behavior.
 
     let handle = match winit_window.window_handle() {
         Ok(handle) => handle,
