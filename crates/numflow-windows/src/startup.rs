@@ -115,6 +115,7 @@ fn startup_command_bytes(executable: &Path) -> Vec<u8> {
     command.push(u16::from(b'"'));
     command.extend(executable.as_os_str().encode_wide());
     command.push(u16::from(b'"'));
+    command.extend(" --background".encode_utf16());
     command.push(0);
 
     command.into_iter().flat_map(u16::to_le_bytes).collect()
@@ -127,7 +128,7 @@ mod tests {
     use super::startup_command_bytes;
 
     #[test]
-    fn startup_command_quotes_executable_and_is_nul_terminated() {
+    fn startup_command_quotes_executable_and_uses_background_mode() {
         let bytes = startup_command_bytes(Path::new(r"C:\Program Files\NumFlow\numflow.exe"));
         let (chunks, remainder) = bytes.as_chunks::<2>();
         assert!(remainder.is_empty());
@@ -137,7 +138,10 @@ mod tests {
             .collect::<Vec<_>>();
         let decoded = String::from_utf16(&wide[..wide.len() - 1]).expect("valid UTF-16");
 
-        assert_eq!(decoded, r#""C:\Program Files\NumFlow\numflow.exe""#);
+        assert_eq!(
+            decoded,
+            r#""C:\Program Files\NumFlow\numflow.exe" --background"#
+        );
         assert_eq!(wide.last(), Some(&0));
     }
 }
