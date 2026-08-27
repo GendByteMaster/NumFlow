@@ -1,0 +1,166 @@
+name: Windows Release
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-distribution:
+    name: Build Windows MSI and portable package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Install WiX Toolset 4
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.6
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" --version
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $package = $metadata.packages | Where-Object { $_.name -eq "numflow" } | Select-Object -First 1
+          if ($null -eq $package) { throw "numflow package metadata not found" }
+          "NUMFLOW_VERSION=$($package.version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $expected = "refs/tags/v$($package.version)"
+            if ($env:GITHUB_REF -ne $expected) {
+              throw "Release tag $env:GITHUB_REF does not match Cargo version $expected"
+            }
+          }
+
+      - name: Build MSI and portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = (Resolve-Path "target/release/numflow.exe").Path
+          $msi = "dist/NumFlow-$env:NUMFLOW_VERSION-x64.msi"
+
+          wix build installer/NumFlow.wxs `
+            -arch x64 `
+            -d "ProductVersion=$env:NUMFLOW_VERSION" `
+            -d "NumFlowExe=$exe" `
+            -pdbtype none `
+            -out $msi
+
+          if (-not (Test-Path $msi) -or (Get-Item $msi).Length -le 0) {
+            throw "MSI was not produced"
+          }
+
+          $portable = "dist/NumFlow-$env:NUMFLOW_VERSION-portable"
+          New-Item -ItemType Directory -Force $portable | Out-Null
+          Copy-Item $exe "$portable/NumFlow.exe"
+          Copy-Item LICENSE "$portable/LICENSE"
+          Copy-Item README.md "$portable/README.md"
+          Copy-Item assets/sfx/README.md "$portable/SFX-LICENSE.md"
+          Compress-Archive `
+            -Path "$portable/*" `
+            -DestinationPath "dist/NumFlow-$env:NUMFLOW_VERSION-portable-x64.zip" `
+            -CompressionLevel Optimal
+          Remove-Item -Recurse -Force $portable
+
+      - name: Verify distribution artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = "dist/NumFlow-$env:NUMFLOW_VERSION-x64.msi"
+          $zip = "dist/NumFlow-$env:NUMFLOW_VERSION-portable-x64.zip"
+          $decompiled = "dist/NumFlow-$env:NUMFLOW_VERSION-decompiled.wxs"
+
+          wix msi decompile $msi -out $decompiled
+          if (-not (Test-Path $decompiled)) {
+            throw "MSI decompile verification failed"
+          }
+
+          $verify = Join-Path $env:RUNNER_TEMP "numflow-portable-verify"
+          Expand-Archive $zip -DestinationPath $verify -Force
+          foreach ($required in @("NumFlow.exe", "LICENSE", "README.md", "SFX-LICENSE.md")) {
+            if (-not (Test-Path (Join-Path $verify $required))) {
+              throw "Portable package missing $required"
+            }
+          }
+
+          Remove-Item -Recurse -Force $verify
+          Remove-Item $decompiled
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            "dist/NumFlow-$env:NUMFLOW_VERSION-x64.msi",
+            "dist/NumFlow-$env:NUMFLOW_VERSION-portable-x64.zip"
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($file))"
+          }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+
+      - name: Upload distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: numflow-windows-x64
+          path: |
+            dist/*.msi
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $files = @(
+            "dist/NumFlow-$env:NUMFLOW_VERSION-x64.msi",
+            "dist/NumFlow-$env:NUMFLOW_VERSION-portable-x64.zip",
+            "dist/SHA256SUMS.txt"
+          )
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag @files --title "NumFlow $tag" --generate-notes --verify-tag
+          }
