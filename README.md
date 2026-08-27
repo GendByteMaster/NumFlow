@@ -10,7 +10,7 @@ A lightweight accessibility utility for controlling the mouse pointer with the N
 
 ## Status
 
-Early development / architecture phase.
+Active Windows-first development. The global NumPad input path, background pointer runtime, motion engine, UI/tray state bridge, and fail-safe pointer release are now wired together in `dev/master`; validation and reliability work are still in progress.
 
 > Development branch: `dev/master`. The `master` branch is intentionally left untouched until a release or merge is explicitly approved.
 
