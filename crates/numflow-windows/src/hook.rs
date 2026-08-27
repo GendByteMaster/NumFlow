@@ -16,7 +16,7 @@ use windows::{
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+                GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
                 KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VK_NUMLOCK,
             },
             WindowsAndMessaging::{
@@ -506,10 +506,7 @@ mod tests {
         assert_eq!(down.wVk, VK_NUMLOCK);
         assert_eq!(up.wVk, VK_NUMLOCK);
         assert_eq!(down.dwFlags, KEYEVENTF_EXTENDEDKEY);
-        assert_eq!(
-            up.dwFlags,
-            KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP
-        );
+        assert_eq!(up.dwFlags, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP);
         assert_eq!(down.dwExtraInfo, NUMFLOW_NUM_LOCK_INJECTION_TAG);
         assert_eq!(up.dwExtraInfo, NUMFLOW_NUM_LOCK_INJECTION_TAG);
     }
