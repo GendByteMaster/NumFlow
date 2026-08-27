@@ -26,9 +26,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-
       - name: Apply bounded runtime event patch
         run: python scripts/_phase11_bounded_events_patch.py
 
