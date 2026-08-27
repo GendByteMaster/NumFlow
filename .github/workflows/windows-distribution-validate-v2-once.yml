@@ -1,0 +1,321 @@
+name: One-shot NumFlow Windows distribution validation v2
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/windows-distribution-validate-v2-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Finalize application and documentation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+          import re
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"pattern not found in {path}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          # Application: explicit background launch without growing run() beyond Clippy's limit.
+          app = Path("src/app.rs")
+          text = app.read_text(encoding="utf-8")
+          signature = "pub fn run() -> Result<(), AppError> {"
+          if signature not in text:
+              raise SystemExit("app::run signature not found")
+          helper = """fn show_main_window_if_needed(
+              window: &AppWindow,
+              settings: &UiSettings,
+              background: bool,
+          ) -> Result<(), AppError> {
+              if background || settings.start_minimized() {
+                  tracing::info!(
+                      background,
+                      start_minimized = settings.start_minimized(),
+                      \"starting NumFlow with settings window hidden\"
+                  );
+                  Ok(())
+              } else {
+                  window
+                      .show()
+                      .map_err(|error| AppError::Ui(error.to_string()))
+              }
+          }
+
+          pub fn run(background: bool) -> Result<(), AppError> {"""
+          # YAML block indentation is stripped by the runner; normalize only the deliberate Python literal indentation.
+          helper = re.sub(r"(?m)^          ", "", helper)
+          text = text.replace(signature, helper, 1)
+          show_pattern = re.compile(
+              r"    if settings\.borrow\(\)\.start_minimized\(\) \{\n"
+              r"        tracing::info!\(\"starting NumFlow with settings window hidden\"\);\n"
+              r"    \} else \{\n"
+              r"        window\n"
+              r"            \.show\(\)\n"
+              r"            \.map_err\(\|error\| AppError::Ui\(error\.to_string\(\)\)\)\?;\n"
+              r"    \}\n"
+          )
+          text, count = show_pattern.subn(
+              "    show_main_window_if_needed(&window, &settings.borrow(), background)?;\n",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"expected one main-window startup block, replaced {count}")
+          app.write_text(text, encoding="utf-8")
+
+          # README: installation/distribution and current UI/runtime state.
+          replace_once(
+              "README.md",
+              "- Main Slint settings window with live status and NumPad visualization.",
+              "- Compact material-styled Slint settings window with a separate editable Bindings panel.",
+          )
+          replace_once(
+              "README.md",
+              "- start-with-Windows state;\n- profile speed / maximum speed / acceleration;",
+              "- start-with-Windows state;\n- interface-sound enable state and 0–100% volume;\n- profile speed / maximum speed / acceleration;",
+          )
+          replace_once(
+              "README.md",
+              "The audio service already exposes an enable/disable control internally so a user-facing sound toggle can be added to Settings later without changing the Num Lock runtime architecture.",
+              "Interface sounds can be enabled or disabled in Advanced settings, and their 0–100% volume is persisted independently from the Windows system mixer.",
+          )
+          installation = """## Installation
+
+          Windows x64 releases provide two artifacts:
+
+          - **MSI:** `NumFlow-<version>-x64.msi` installs to `C:\\Program Files\\NumFlow`, creates a Start Menu shortcut, and appears in Windows Installed Apps.
+          - **Portable:** `NumFlow-<version>-portable-x64.zip` can be extracted and run without installation.
+
+          `Start with Windows` remains an explicit user preference. When enabled, NumFlow registers the current executable under the current-user Windows Run key with `--background`, so the global input runtime and tray start after sign-in without opening the settings window. The startup registration itself does not require administrator rights.
+
+          See [`docs/INSTALLATION.md`](docs/INSTALLATION.md) for installation, portable usage, autostart, uninstall, signing status, and checksum details.
+
+          """
+          installation = re.sub(r"(?m)^          ", "", installation)
+          replace_once("README.md", "## Running from source\n", installation + "## Running from source\n")
+          replace_once(
+              "README.md",
+              "One Phase 11 reliability item is still intentionally open: the `RuntimeEvent → UI` event path needs bounded/coalescing semantics that preserve faults and state transitions without ever blocking the pointer worker.",
+              "The `RuntimeEvent → UI` bridge uses bounded, non-blocking delivery so a stalled UI cannot create an unbounded producer queue. Manual soak and fault/backpressure validation remains part of the release checklist.",
+          )
+          replace_once("README.md", "- design and validate bounded/coalesced `RuntimeEvent → UI` delivery;\n", "")
+          replace_once(
+              "README.md",
+              "- Windows executable icon/metadata and packaging strategy;\n- release artifact checksums, changelog, usage notes, and known limitations.",
+              "- final executable metadata and production code-signing policy;\n- clean-machine MSI/portable validation and remaining manual release evidence.",
+          )
+          replace_once(
+              "README.md",
+              "See [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) and the [v0.1 roadmap]",
+              "See [`docs/INSTALLATION.md`](docs/INSTALLATION.md), [`docs/RELEASING.md`](docs/RELEASING.md), [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md), [`CHANGELOG.md`](CHANGELOG.md), and the [v0.1 roadmap]",
+          )
+
+          # Development guide: current configuration/runtime status and packaging workflow.
+          replace_once(
+              "docs/DEVELOPMENT.md",
+              "The release executable is produced under the Cargo release target directory. Packaging is not finalized yet; do not treat a raw release binary as the final v0.1 distribution format.",
+              "The release executable is produced under the Cargo release target directory. Packaged Windows distributions are built from that executable as a WiX MSI and a portable ZIP; see `RELEASING.md`.",
+          )
+          replace_once(
+              "docs/DEVELOPMENT.md",
+              "The config model owns profile selection, HUD state, start-minimized/start-with-Windows state, motion values, precision/boost multipliers, selected mouse button, and bindings.",
+              "The config model owns profile selection, HUD state, start-minimized/start-with-Windows state, interface-sound enable/volume state, motion values, precision/boost multipliers, selected mouse button, and bindings.",
+          )
+          replace_once(
+              "docs/DEVELOPMENT.md",
+              "The Windows audio service already supports being enabled/disabled internally. A future Settings toggle for mode-switch sounds should connect to that service and be added to the typed config instead of introducing a separate global flag.",
+              "The Windows audio service is controlled through the typed configuration model: Advanced settings persist both the interface-sound enable state and the 0–100% volume, and runtime updates apply without changing the Windows system mixer.",
+          )
+          dev = Path("docs/DEVELOPMENT.md")
+          dev_text = dev.read_text(encoding="utf-8")
+          concurrency = re.compile(r"### Remaining Phase 11 concurrency work\n.*?\n## Safety invariants", re.S)
+          replacement = """### Runtime event backpressure
+
+          `RuntimeEvent → UI` delivery uses a bounded, non-blocking queue. The runtime is the single producer; when the UI queue is full it evicts one stale UI event before retrying delivery, while the latest runtime event carries an authoritative state snapshot used to resynchronize UI/tray/HUD state.
+
+          Manual release validation must still exercise stalled/minimized UI, fault delivery, and long-running memory behaviour. Do not replace the non-blocking design with a blocking send from the pointer worker.
+
+          ## Safety invariants"""
+          replacement = re.sub(r"(?m)^          ", "", replacement)
+          dev_text, count = concurrency.subn(replacement, dev_text, count=1)
+          if count != 1:
+              raise SystemExit(f"expected one stale concurrency section, replaced {count}")
+          if "## Windows distribution development" not in dev_text:
+              distribution = """
+
+          ## Windows distribution development
+
+          Distribution changes must preserve the normal Rust quality gate and prove that the MSI and portable archive can be built from the same release executable. WiX authoring lives in `installer/NumFlow.wxs`; release automation lives in `.github/workflows/release.yml`.
+
+          The MSI is a per-machine x64 package for `Program Files`, while `Start with Windows` remains a per-user runtime preference implemented by `numflow-windows`. Autostart invokes the installed or portable executable with `--background`; do not move this responsibility into the installer or force startup on users.
+
+          For local packaging commands and tag/version rules, see [`RELEASING.md`](RELEASING.md). For end-user behaviour, see [`INSTALLATION.md`](INSTALLATION.md).
+          """
+              dev_text += re.sub(r"(?m)^          ", "", distribution)
+          dev.write_text(dev_text, encoding="utf-8")
+
+          # Release checklist: automate what is proven, keep real-machine checks open.
+          replace_once(
+              "docs/RELEASE_CHECKLIST.md",
+              "- [ ] Replace the remaining unbounded `RuntimeEvent → UI` delivery path with bounded/coalescing semantics.",
+              "- [x] `RuntimeEvent → UI` delivery uses a bounded, non-blocking event queue with stale-event eviction under pressure.",
+          )
+          replace_once(
+              "docs/RELEASE_CHECKLIST.md",
+              "- settings layout remains usable;\n- no clipped labels/controls;\n- NumPad visualization remains readable;",
+              "- settings layout remains usable;\n- no clipped labels/controls;\n- Bindings panel remains readable and reachable;",
+          )
+          replace_once(
+              "docs/RELEASE_CHECKLIST.md",
+              "- [ ] Start with Windows registration.\n- [ ] Single-instance behaviour.",
+              "- [ ] Start with Windows registration uses `--background` and opens no settings window after sign-in.\n- [ ] Single-instance behaviour.",
+          )
+          checklist = Path("docs/RELEASE_CHECKLIST.md")
+          check_text = checklist.read_text(encoding="utf-8")
+          packaging = """## Packaging and Phase 12
+
+          - [x] Generate production Windows application icon resources from `assets/numflow-icon.svg`.
+          - [ ] Add/finalize executable metadata and production code signing.
+          - [ ] Confirm release version.
+          - [x] Distribution format selected: WiX Toolset 4 x64 MSI plus portable x64 ZIP.
+          - [x] Release workflow produces a clean locked release build before packaging.
+          - [x] Release workflow generates SHA-256 checksums for MSI and portable ZIP.
+          - [ ] Verify installer, upgrade, and uninstall on clean Windows 10 and Windows 11 environments.
+          - [x] README and dedicated installation/releasing documentation describe packaged builds.
+          - [x] UIPI and unsigned-build limitations are documented.
+          - [x] `CHANGELOG.md` tracks the release candidate.
+          - [x] Portable archive includes project and UI-SFX license/source notices.
+          - [x] Release-PR workflow builds and structurally verifies the MSI plus portable ZIP contents.
+
+          ## Final release gate"""
+          packaging = re.sub(r"(?m)^          ", "", packaging)
+          check_text, count = re.subn(
+              r"## Packaging and Phase 12\n.*?\n## Final release gate",
+              packaging,
+              check_text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"expected one packaging checklist section, replaced {count}")
+          checklist.write_text(check_text, encoding="utf-8")
+          '@ | python -
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Install WiX Toolset 4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install --global wix --version 4.0.6
+          $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe"
+          if (-not (Test-Path $wix)) { throw 'WiX executable not found after installation' }
+          & $wix --version
+          if ($LASTEXITCODE -ne 0) { throw "WiX version check failed: $LASTEXITCODE" }
+          "WIX_EXE=$wix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and structurally verify MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $package = $metadata.packages | Where-Object { $_.name -eq 'numflow' } | Select-Object -First 1
+          if ($null -eq $package) { throw 'numflow package metadata not found' }
+          $version = $package.version
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = (Resolve-Path 'target/release/numflow.exe').Path
+          $msi = "dist/NumFlow-$version-x64.msi"
+          & $env:WIX_EXE build installer/NumFlow.wxs -arch x64 -d "ProductVersion=$version" -d "NumFlowExe=$exe" -pdbtype none -out $msi
+          if ($LASTEXITCODE -ne 0) { throw "WiX build failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path $msi) -or (Get-Item $msi).Length -le 0) { throw 'MSI was not produced' }
+          $decompiled = 'dist/decompiled.wxs'
+          & $env:WIX_EXE msi decompile $msi -out $decompiled
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $decompiled)) { throw 'MSI decompile verification failed' }
+
+      - name: Build and verify portable ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq 'numflow' } | Select-Object -First 1).version
+          $portable = "dist/NumFlow-$version-portable"
+          New-Item -ItemType Directory -Force $portable | Out-Null
+          Copy-Item target/release/numflow.exe "$portable/NumFlow.exe"
+          Copy-Item LICENSE "$portable/LICENSE"
+          Copy-Item README.md "$portable/README.md"
+          Copy-Item assets/sfx/README.md "$portable/SFX-LICENSE.md"
+          $zip = "dist/NumFlow-$version-portable-x64.zip"
+          Compress-Archive -Path "$portable/*" -DestinationPath $zip -CompressionLevel Optimal
+          if (-not (Test-Path $zip) -or (Get-Item $zip).Length -le 0) { throw 'Portable ZIP was not produced' }
+          $verify = Join-Path $env:RUNNER_TEMP 'numflow-portable-verify'
+          Expand-Archive $zip -DestinationPath $verify -Force
+          foreach ($required in @('NumFlow.exe', 'LICENSE', 'README.md', 'SFX-LICENSE.md')) {
+            if (-not (Test-Path (Join-Path $verify $required))) { throw "Portable package missing $required" }
+          }
+
+      - name: Verify distribution guardrails
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $startup = Get-Content crates/numflow-windows/src/startup.rs -Raw
+          $main = Get-Content src/main.rs -Raw
+          $app = Get-Content src/app.rs -Raw
+          if ($startup -notmatch ' --background') { throw 'Autostart does not use --background' }
+          if ($main -notmatch 'app::run\(background\)') { throw 'main.rs does not forward background mode' }
+          if ($app -notmatch 'background \|\| settings\.start_minimized\(\)') { throw 'app.rs does not hide the settings window for background mode' }
+          $release = Get-Content .github/workflows/release.yml -Raw
+          foreach ($needle in @('wix build', 'portable-x64.zip', 'SHA256SUMS.txt', 'refs/tags/v', 'pull_request:')) {
+            if ($release -notmatch [regex]::Escape($needle)) { throw "Release workflow missing $needle" }
+          }
+          foreach ($path in @('docs/INSTALLATION.md', 'docs/RELEASING.md', 'CHANGELOG.md', 'installer/NumFlow.wxs')) {
+            if (-not (Test-Path $path)) { throw "Missing $path" }
+          }
+
+      - name: Commit validated release-candidate changes
+        shell: pwsh
+        run: |
+          Remove-Item .github/workflows/windows-distribution-validate-v2-once.yml
+          Remove-Item -Recurse -Force dist
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(release): finalize Windows distribution support"
+          git push origin HEAD:dev/master
