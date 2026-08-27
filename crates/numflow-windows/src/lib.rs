@@ -22,7 +22,7 @@ pub use audio::{AudioCue, AudioFeedbackError, AudioFeedbackService};
 #[cfg(windows)]
 pub use hook::{HookError, KeyboardHook, KeyboardHookEvent};
 #[cfg(windows)]
-pub use hud::{HudPosition, recommended_hud_position};
+pub use hud::{HudPosition, configure_hud_native_window, recommended_hud_position};
 #[cfg(windows)]
 pub use instance::{SingleInstanceError, SingleInstanceGuard};
 #[cfg(windows)]

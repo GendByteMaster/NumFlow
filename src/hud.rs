@@ -3,6 +3,12 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 use numflow_core::{CoreEffect, MouseButton, PointerEffect, StateChange};
 use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
 
+#[cfg(windows)]
+use slint::winit_030::winit::{
+    platform::windows::WindowExtWindows,
+    raw_window_handle::{HasWindowHandle, RawWindowHandle},
+};
+
 use crate::{HudIconKind, HudWindow};
 
 const HUD_AUTO_HIDE: Duration = Duration::from_millis(1_600);
@@ -223,17 +229,44 @@ impl HudController {
                     tracing::warn!(%error, "failed to make NumFlow HUD click-through");
                 }
 
+                configure_native_hud_window(winit_window);
                 position_hud_window(winit_window);
             });
 
             if configured.is_none() {
                 tracing::warn!(
-                    "NumFlow HUD requires the Slint winit backend for click-through mode"
+                    "NumFlow HUD requires the Slint winit backend for overlay window behavior"
                 );
             }
         });
     }
 }
+
+#[cfg(windows)]
+fn configure_native_hud_window(winit_window: &slint::winit_030::winit::window::Window) {
+    // Winit maintains the shell-facing skip-taskbar state (including Explorer restarts).
+    winit_window.set_skip_taskbar(true);
+
+    let handle = match winit_window.window_handle() {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "failed to obtain native handle for NumFlow HUD");
+            return;
+        }
+    };
+
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        tracing::warn!("NumFlow HUD returned a non-Win32 window handle on Windows");
+        return;
+    };
+
+    if let Err(error) = numflow_windows::configure_hud_native_window(handle.hwnd.get()) {
+        tracing::warn!(%error, "failed to configure NumFlow HUD as a non-activating tool window");
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_native_hud_window(_winit_window: &slint::winit_030::winit::window::Window) {}
 
 #[cfg(windows)]
 fn position_hud_window(winit_window: &slint::winit_030::winit::window::Window) {

@@ -1,9 +1,13 @@
-use std::mem::size_of;
+use std::{ffi::c_void, mem::size_of};
 
 use windows::Win32::{
-    Foundation::{POINT, RECT},
+    Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
-    UI::WindowsAndMessaging::GetCursorPos,
+    UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+        WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,37 @@ pub fn recommended_hud_position(width: u32, height: u32, margin: u32) -> Option<
     ))
 }
 
+/// Apply the native Windows styles expected from a transient HUD/overlay window.
+///
+/// `WS_EX_TOOLWINDOW` keeps the HUD out of the Alt+Tab switcher, `WS_EX_NOACTIVATE`
+/// prevents it from taking keyboard focus when shown, and `WS_EX_APPWINDOW` is removed
+/// so the shell does not promote it to a normal application window/taskbar entry.
+pub fn configure_hud_native_window(hwnd: isize) -> windows::core::Result<()> {
+    let hwnd = HWND(hwnd as *mut c_void);
+    let current_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let updated_style = hud_extended_style(current_style);
+
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, updated_style);
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn hud_extended_style(current_style: isize) -> isize {
+    (current_style | WS_EX_TOOLWINDOW.0 as isize | WS_EX_NOACTIVATE.0 as isize)
+        & !(WS_EX_APPWINDOW.0 as isize)
+}
+
 fn bottom_right_hud_position(work: WorkArea, width: i32, height: i32, margin: i32) -> HudPosition {
     let left = work.left.saturating_add(margin);
     let top = work.top.saturating_add(margin);
@@ -78,7 +113,11 @@ fn bottom_right_hud_position(work: WorkArea, width: i32, height: i32, margin: i3
 
 #[cfg(test)]
 mod tests {
-    use super::{HudPosition, WorkArea, bottom_right_hud_position};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    };
+
+    use super::{HudPosition, WorkArea, bottom_right_hud_position, hud_extended_style};
 
     const WORK: WorkArea = WorkArea {
         left: 0,
@@ -118,5 +157,14 @@ mod tests {
         let position = bottom_right_hud_position(work, 272, 78, 24);
 
         assert_eq!(position, HudPosition { x: 24, y: 24 });
+    }
+
+    #[test]
+    fn hud_native_style_is_tool_window_and_non_activating() {
+        let styled = hud_extended_style(WS_EX_APPWINDOW.0 as isize);
+
+        assert_eq!(styled & WS_EX_APPWINDOW.0 as isize, 0);
+        assert_ne!(styled & WS_EX_TOOLWINDOW.0 as isize, 0);
+        assert_ne!(styled & WS_EX_NOACTIVATE.0 as isize, 0);
     }
 }
