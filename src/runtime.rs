@@ -70,7 +70,7 @@ mod platform {
     use crossbeam_channel::{Receiver, Sender, TrySendError};
     use numflow_core::{
         ClickKind, ControllerState, CoreEffect, InputAction, MotionEngine, MotionModifiers,
-        MouseButton, NumpadKey, PointerBackend, PointerEffect,
+        NumpadKey, PointerBackend, PointerEffect,
     };
     use numflow_windows::{
         AudioCue, AudioFeedbackService, KeyState, KeyboardEventNormalizer, KeyboardHook,
@@ -285,12 +285,49 @@ mod platform {
         }
 
         fn apply_action(&mut self, action: InputAction) -> Result<Vec<CoreEffect>, B::Error> {
+            match action {
+                InputAction::Hold => return self.hold_selected_button(),
+                InputAction::Release => return self.release_tracked_buttons(),
+                InputAction::SetEnabled(false) if self.controller.is_enabled() => {
+                    self.motion.stop();
+                    let mut effects = self.release_tracked_buttons()?;
+                    effects.extend(self.controller.apply(InputAction::SetEnabled(false)));
+                    return Ok(effects);
+                }
+                _ => {}
+            }
+
             let effects = self.controller.apply(action);
             if !self.controller.is_enabled() {
                 self.motion.stop();
             }
             self.execute_effects(&effects)?;
             Ok(effects)
+        }
+
+        fn hold_selected_button(&mut self) -> Result<Vec<CoreEffect>, B::Error> {
+            if !self.controller.is_enabled() || self.controller.held_button().is_some() {
+                return Ok(Vec::new());
+            }
+
+            // Sweep any stale backend-only state before starting a new latch. WindowsPointer only
+            // tracks buttons injected by NumFlow, so this never releases a physical button that the
+            // user is holding directly on the mouse.
+            self.pointer.release_all()?;
+            let button = self.controller.selected_button();
+            self.pointer.button_down(button)?;
+
+            // Commit the controller state only after the physical Mouse Down succeeded. The
+            // returned PointerEffect is for UI/HUD state propagation and must not be executed again.
+            Ok(self.controller.apply(InputAction::Hold))
+        }
+
+        fn release_tracked_buttons(&mut self) -> Result<Vec<CoreEffect>, B::Error> {
+            // Release every button still tracked by the backend first. This is intentionally wider
+            // than the controller's single primary hold and repairs stale/multiple backend state.
+            // The controller is cleared only after Windows accepted the release sequence.
+            self.pointer.release_all()?;
+            Ok(self.controller.apply(InputAction::Release))
         }
 
         fn handle_key_event(
@@ -309,20 +346,25 @@ mod platform {
             }
 
             if event.state == KeyState::Pressed {
-                // NumPad 0 is the dedicated left-button drag latch. It holds the physical left
-                // button without changing the user's selected click button.
+                // NumPad 0 latches whichever mouse button is currently selected. Repeated presses
+                // while a hold is active are idempotent in hold_selected_button().
                 if event.key == NumpadKey::Num0 && event.action == InputAction::Hold {
-                    let effects = self.controller.hold_button(MouseButton::Left);
-                    self.execute_effects(&effects)?;
-                    return Ok(effects);
+                    return self.apply_action(InputAction::Hold);
                 }
 
-                // While a drag latch is active, NumPad 5 and + are explicit release controls.
-                // When nothing is held they retain their normal Click / DoubleClick behavior.
-                if matches!(event.key, NumpadKey::Num5 | NumpadKey::Add)
-                    && self.controller.held_button().is_some()
-                {
-                    return self.apply_action(InputAction::Release);
+                if matches!(
+                    event.key,
+                    NumpadKey::Num5 | NumpadKey::Add | NumpadKey::Decimal
+                ) {
+                    let had_active_hold = self.controller.held_button().is_some();
+                    let release_effects = self.release_tracked_buttons()?;
+
+                    // Decimal / keypad Del is a dedicated release command. Num5 and + become
+                    // release commands only while a hold is active; otherwise their configured
+                    // click/double-click actions continue to work normally.
+                    if had_active_hold || event.key == NumpadKey::Decimal {
+                        return Ok(release_effects);
+                    }
                 }
 
                 if matches!(
@@ -355,9 +397,9 @@ mod platform {
 
         fn shutdown(&mut self) -> Result<Vec<CoreEffect>, B::Error> {
             self.motion.stop();
-            let effects = self.controller.shutdown();
-            self.execute_effects(&effects)?;
             self.pointer.release_all()?;
+            let mut effects = self.controller.apply(InputAction::Release);
+            effects.extend(self.controller.shutdown());
             Ok(effects)
         }
 
@@ -768,6 +810,7 @@ mod platform {
             }
 
             fn release_all(&mut self) -> Result<(), Self::Error> {
+                self.releases += self.held.len();
                 self.held.clear();
                 Ok(())
             }
@@ -909,66 +952,96 @@ mod platform {
         }
 
         #[test]
-        fn numpad_zero_holds_left_without_duplicate_mouse_down() {
-            let mut machine = runtime_machine();
-            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
-            machine
-                .apply_action(InputAction::SelectButton(MouseButton::Right))
-                .expect("mock is infallible");
+        fn numpad_zero_holds_selected_button_without_duplicate_mouse_down() {
+            for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+                let mut machine = runtime_machine();
+                apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+                machine
+                    .apply_action(InputAction::SelectButton(button))
+                    .expect("mock is infallible");
 
-            let first = machine
-                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
-                .expect("mock is infallible");
-            let repeated = machine
-                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
-                .expect("mock is infallible");
+                let first = machine
+                    .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                    .expect("mock is infallible");
+                let repeated = machine
+                    .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                    .expect("mock is infallible");
 
-            assert!(!first.is_empty());
-            assert!(repeated.is_empty());
-            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
-            assert_eq!(machine.controller.held_button(), Some(MouseButton::Left));
-            assert_eq!(machine.controller.selected_button(), MouseButton::Right);
+                assert!(!first.is_empty());
+                assert!(repeated.is_empty());
+                assert_eq!(machine.pointer.held, vec![button]);
+                assert_eq!(machine.controller.held_button(), Some(button));
+                assert_eq!(machine.controller.selected_button(), button);
+            }
         }
 
         #[test]
-        fn numpad_five_releases_active_hold_and_resets_state() {
-            let mut machine = runtime_machine();
-            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
-            machine
-                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
-                .expect("mock is infallible");
+        fn five_add_and_decimal_release_each_supported_button_and_reset_state() {
+            let release_keys = [
+                (NumpadKey::Num5, InputAction::Click),
+                (NumpadKey::Add, InputAction::DoubleClick),
+                (NumpadKey::Decimal, InputAction::Release),
+            ];
 
-            machine
-                .handle_key_event(pressed(NumpadKey::Num5, InputAction::Click))
-                .expect("mock is infallible");
+            for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+                for (release_key, release_action) in release_keys {
+                    let mut machine = runtime_machine();
+                    apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+                    machine
+                        .apply_action(InputAction::SelectButton(button))
+                        .expect("mock is infallible");
+                    machine
+                        .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                        .expect("mock is infallible");
 
-            assert!(machine.pointer.held.is_empty());
-            assert_eq!(machine.controller.held_button(), None);
-            assert_eq!(machine.pointer.releases, 1);
-            assert_eq!(machine.pointer.clicks, 0);
+                    machine
+                        .handle_key_event(pressed(release_key, release_action))
+                        .expect("mock is infallible");
 
-            machine
-                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
-                .expect("mock is infallible");
-            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
+                    assert!(machine.pointer.held.is_empty());
+                    assert_eq!(machine.controller.held_button(), None);
+                    assert_eq!(machine.pointer.releases, 1);
+                    assert_eq!(machine.pointer.clicks, 0);
+                    assert_eq!(machine.pointer.double_clicks, 0);
+
+                    machine
+                        .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                        .expect("mock is infallible");
+                    assert_eq!(machine.pointer.held, vec![button]);
+                    assert_eq!(machine.controller.held_button(), Some(button));
+                }
+            }
         }
 
         #[test]
-        fn numpad_add_releases_active_hold_without_double_clicking() {
+        fn release_key_sweeps_multiple_backend_tracked_buttons() {
             let mut machine = runtime_machine();
             apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+
+            // Simulate stale/legacy backend state that contains more buttons than the current
+            // single-latch controller model can normally create. The release command must still
+            // physically clear every backend-tracked button.
             machine
-                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .pointer
+                .button_down(MouseButton::Left)
                 .expect("mock is infallible");
+            machine
+                .pointer
+                .button_down(MouseButton::Right)
+                .expect("mock is infallible");
+            assert_eq!(
+                machine.pointer.held,
+                vec![MouseButton::Left, MouseButton::Right]
+            );
+            assert_eq!(machine.controller.held_button(), None);
 
             machine
-                .handle_key_event(pressed(NumpadKey::Add, InputAction::DoubleClick))
+                .handle_key_event(pressed(NumpadKey::Decimal, InputAction::Release))
                 .expect("mock is infallible");
 
             assert!(machine.pointer.held.is_empty());
+            assert_eq!(machine.pointer.releases, 2);
             assert_eq!(machine.controller.held_button(), None);
-            assert_eq!(machine.pointer.releases, 1);
-            assert_eq!(machine.pointer.double_clicks, 0);
         }
 
         #[test]
@@ -981,6 +1054,9 @@ mod platform {
                 .expect("mock is infallible");
             machine
                 .handle_key_event(pressed(NumpadKey::Add, InputAction::DoubleClick))
+                .expect("mock is infallible");
+            machine
+                .handle_key_event(pressed(NumpadKey::Decimal, InputAction::Release))
                 .expect("mock is infallible");
 
             assert_eq!(machine.pointer.clicks, 1);
