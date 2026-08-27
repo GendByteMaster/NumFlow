@@ -27,10 +27,24 @@ impl RuntimeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeStateSnapshot {
+    pub enabled: bool,
+    pub selected_button: MouseButton,
+    pub held_button: Option<MouseButton>,
+    pub precision: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeEvent {
-    Effects(Vec<CoreEffect>),
-    Fault(String),
+    Effects {
+        state: RuntimeStateSnapshot,
+        effects: Vec<CoreEffect>,
+    },
+    Fault {
+        state: RuntimeStateSnapshot,
+        reason: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +62,7 @@ pub enum RuntimeError {
 #[cfg(windows)]
 mod platform {
     use std::{
-        sync::mpsc::{self, Receiver as StdReceiver, Sender as StdSender, SyncSender},
+        sync::mpsc::{self, Receiver as StdReceiver, SyncSender},
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
@@ -63,10 +77,11 @@ mod platform {
         WindowsPointer,
     };
 
-    use super::{RuntimeConfig, RuntimeError, RuntimeEvent};
+    use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot};
 
     const MOTION_TICK: Duration = Duration::from_millis(8);
     const COMMAND_QUEUE_CAPACITY: usize = 64;
+    const EVENT_QUEUE_CAPACITY: usize = 64;
 
     #[derive(Debug)]
     enum RuntimeCommand {
@@ -79,13 +94,25 @@ mod platform {
 
     #[derive(Debug)]
     struct RuntimeEventSink {
-        events: StdSender<RuntimeEvent>,
+        events: Sender<RuntimeEvent>,
+        overflow_reader: Receiver<RuntimeEvent>,
         wake: SyncSender<()>,
     }
 
     impl RuntimeEventSink {
         fn send(&self, event: RuntimeEvent) {
-            if self.events.send(event).is_ok() {
+            let delivered = match self.events.try_send(event) {
+                Ok(()) => true,
+                Err(TrySendError::Full(event)) => {
+                    // The worker is the only producer. Evicting one stale UI event is therefore
+                    // sufficient to make room without ever blocking pointer/input processing.
+                    let _ = self.overflow_reader.try_recv();
+                    self.events.try_send(event).is_ok()
+                }
+                Err(TrySendError::Disconnected(_)) => false,
+            };
+
+            if delivered {
                 let _ = self.wake.try_send(());
             }
         }
@@ -94,7 +121,7 @@ mod platform {
     #[derive(Debug)]
     pub struct BackgroundRuntime {
         command_sender: Sender<RuntimeCommand>,
-        event_receiver: StdReceiver<RuntimeEvent>,
+        event_receiver: Receiver<RuntimeEvent>,
         wake_receiver: Option<StdReceiver<()>>,
         join: Option<JoinHandle<()>>,
     }
@@ -103,7 +130,8 @@ mod platform {
         pub fn start(config: RuntimeConfig) -> Result<Self, RuntimeError> {
             let (command_sender, command_receiver) =
                 crossbeam_channel::bounded(COMMAND_QUEUE_CAPACITY);
-            let (event_sink, event_receiver) = mpsc::channel();
+            let (event_sender, event_receiver) = crossbeam_channel::bounded(EVENT_QUEUE_CAPACITY);
+            let event_overflow_reader = event_receiver.clone();
             let (wake_sender, wake_receiver) = mpsc::sync_channel(1);
             let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
 
@@ -111,7 +139,8 @@ mod platform {
                 .name("numflow-runtime".to_owned())
                 .spawn(move || {
                     let event_sink = RuntimeEventSink {
-                        events: event_sink,
+                        events: event_sender,
+                        overflow_reader: event_overflow_reader,
                         wake: wake_sender,
                     };
                     worker_main(config, &command_receiver, &event_sink, &ready_sender);
@@ -219,6 +248,15 @@ mod platform {
 
         fn enabled(&self) -> bool {
             self.controller.is_enabled()
+        }
+
+        fn snapshot(&self) -> RuntimeStateSnapshot {
+            RuntimeStateSnapshot {
+                enabled: self.controller.is_enabled(),
+                selected_button: self.controller.selected_button(),
+                held_button: self.controller.held_button(),
+                precision: self.controller.is_precision_enabled(),
+            }
         }
 
         fn configure(&mut self, config: RuntimeConfig) -> Result<(), B::Error> {
@@ -414,12 +452,18 @@ mod platform {
                 let effects = match machine.shutdown() {
                     Ok(effects) => effects,
                     Err(error) => {
-                        event_sink.send(RuntimeEvent::Fault(error.to_string()));
+                        event_sink.send(RuntimeEvent::Fault {
+                            state: machine.snapshot(),
+                            reason: error.to_string(),
+                        });
                         Vec::new()
                     }
                 };
                 if !effects.is_empty() {
-                    event_sink.send(RuntimeEvent::Effects(effects));
+                    event_sink.send(RuntimeEvent::Effects {
+                        state: machine.snapshot(),
+                        effects,
+                    });
                 }
                 hook.emergency_disable();
                 false
@@ -469,7 +513,10 @@ mod platform {
                 }
                 hook.set_interception_enabled(machine.enabled());
                 if !effects.is_empty() {
-                    event_sink.send(RuntimeEvent::Effects(effects));
+                    event_sink.send(RuntimeEvent::Effects {
+                        state: machine.snapshot(),
+                        effects,
+                    });
                 }
             }
             Err(error) => {
@@ -528,13 +575,19 @@ mod platform {
         hook.emergency_disable();
 
         if !effects.is_empty() {
-            event_sink.send(RuntimeEvent::Effects(effects));
+            event_sink.send(RuntimeEvent::Effects {
+                state: machine.snapshot(),
+                effects,
+            });
         }
         let message = release_error.map_or_else(
             || reason.to_owned(),
             |error| format!("{reason}; additionally failed to release pointer state: {error}"),
         );
-        event_sink.send(RuntimeEvent::Fault(message));
+        event_sink.send(RuntimeEvent::Fault {
+            state: machine.snapshot(),
+            reason: message,
+        });
     }
 
     #[cfg(test)]
@@ -546,8 +599,8 @@ mod platform {
         };
         use numflow_windows::{KeyState, NormalizedKeyEvent};
 
-        use super::RuntimeMachine;
-        use crate::runtime::RuntimeConfig;
+        use super::{RuntimeEventSink, RuntimeMachine};
+        use crate::runtime::{RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot};
 
         #[derive(Debug, Default)]
         struct MockPointer {
@@ -677,6 +730,85 @@ mod platform {
             machine.set_bindings(bindings);
 
             assert!(!machine.motion.is_moving());
+        }
+
+        fn event_state(button: MouseButton) -> RuntimeStateSnapshot {
+            RuntimeStateSnapshot {
+                enabled: true,
+                selected_button: button,
+                held_button: None,
+                precision: false,
+            }
+        }
+
+        #[test]
+        fn bounded_event_sink_evicts_oldest_and_keeps_latest_state() {
+            let (sender, receiver) = crossbeam_channel::bounded(2);
+            let (wake_sender, wake_receiver) = std::sync::mpsc::sync_channel(1);
+            let sink = RuntimeEventSink {
+                events: sender,
+                overflow_reader: receiver.clone(),
+                wake: wake_sender,
+            };
+
+            for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+                sink.send(RuntimeEvent::Effects {
+                    state: event_state(button),
+                    effects: Vec::new(),
+                });
+            }
+
+            let events = receiver.try_iter().collect::<Vec<_>>();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                &events[0],
+                RuntimeEvent::Effects { state, .. }
+                    if state.selected_button == MouseButton::Right
+            ));
+            assert!(matches!(
+                &events[1],
+                RuntimeEvent::Effects { state, .. }
+                    if state.selected_button == MouseButton::Middle
+            ));
+            assert!(wake_receiver.try_recv().is_ok());
+            assert!(wake_receiver.try_recv().is_err());
+        }
+
+        #[test]
+        fn fault_is_retained_when_event_queue_is_full() {
+            let (sender, receiver) = crossbeam_channel::bounded(2);
+            let (wake_sender, _wake_receiver) = std::sync::mpsc::sync_channel(1);
+            let sink = RuntimeEventSink {
+                events: sender,
+                overflow_reader: receiver.clone(),
+                wake: wake_sender,
+            };
+
+            sink.send(RuntimeEvent::Effects {
+                state: event_state(MouseButton::Left),
+                effects: Vec::new(),
+            });
+            sink.send(RuntimeEvent::Effects {
+                state: event_state(MouseButton::Right),
+                effects: Vec::new(),
+            });
+            sink.send(RuntimeEvent::Fault {
+                state: RuntimeStateSnapshot {
+                    enabled: false,
+                    selected_button: MouseButton::Right,
+                    held_button: None,
+                    precision: false,
+                },
+                reason: "test fault".to_owned(),
+            });
+
+            let events = receiver.try_iter().collect::<Vec<_>>();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                &events[1],
+                RuntimeEvent::Fault { state, reason }
+                    if !state.enabled && reason == "test fault"
+            ));
         }
     }
 }

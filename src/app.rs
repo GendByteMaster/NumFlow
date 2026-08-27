@@ -7,8 +7,7 @@ use std::{
 
 use num_traits::ToPrimitive;
 use numflow_core::{
-    Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton, PointerEffect,
-    StateChange,
+    Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton, StateChange,
 };
 use slint::ComponentHandle;
 
@@ -21,7 +20,7 @@ use crate::{
     config::{AppConfig, ConfigError, ConfigLoadStatus, ConfigStore, NumpadKeyConfig},
     error::AppError,
     hud::{HudController, HudEvent},
-    runtime::{BackgroundRuntime, RuntimeConfig, RuntimeEvent},
+    runtime::{BackgroundRuntime, RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot},
 };
 
 const DEFAULT_POINTER_SPEED: f32 = 180.0;
@@ -670,29 +669,38 @@ fn connect_tray(
     }
 }
 
-fn apply_runtime_effects(settings: &mut UiSettings, effects: &[CoreEffect]) -> bool {
-    let mut config_changed = false;
+fn sync_runtime_state(settings: &mut UiSettings, state: RuntimeStateSnapshot) -> bool {
+    let selected_button = state.selected_button.into();
+    let profile = settings
+        .config
+        .profiles
+        .get_mut(&settings.config.active_profile)
+        .expect("active profile must exist");
+    let config_changed =
+        profile.selected_button != selected_button || profile.precision_enabled != state.precision;
+    profile.selected_button = selected_button;
+    profile.precision_enabled = state.precision;
 
-    for effect in effects {
-        match effect {
-            CoreEffect::State(StateChange::Enabled(enabled)) => {
-                let _ = settings.set_enabled(*enabled);
-            }
-            CoreEffect::State(StateChange::Precision(enabled)) => {
-                let _ = settings.set_precision(*enabled);
-                config_changed = true;
-            }
-            CoreEffect::State(StateChange::SelectedButton(button)) => {
-                let _ = settings.set_mouse_button(*button);
-                config_changed = true;
-            }
-            CoreEffect::Pointer(PointerEffect::ButtonDown(_)) => {
-                let _ = settings.controller.apply(InputAction::Hold);
-            }
-            CoreEffect::Pointer(PointerEffect::ButtonUp(_)) => {
-                let _ = settings.controller.apply(InputAction::Release);
-            }
-            CoreEffect::Pointer(PointerEffect::Move(_) | PointerEffect::Click { .. }) => {}
+    // Rebuild the UI-side state machine from the authoritative runtime snapshot. This keeps
+    // settings/tray/HUD state correct even if an older transient event was evicted under load.
+    let _ = settings.controller.apply(InputAction::SetEnabled(false));
+    let _ = settings
+        .controller
+        .apply(InputAction::SelectButton(state.selected_button));
+    let _ = settings
+        .controller
+        .apply(InputAction::SetPrecision(state.precision));
+
+    if state.enabled {
+        let _ = settings.controller.apply(InputAction::SetEnabled(true));
+        if let Some(held_button) = state.held_button {
+            let _ = settings
+                .controller
+                .apply(InputAction::SelectButton(held_button));
+            let _ = settings.controller.apply(InputAction::Hold);
+            let _ = settings
+                .controller
+                .apply(InputAction::SelectButton(state.selected_button));
         }
     }
 
@@ -725,15 +733,17 @@ fn start_runtime_event_bridge(
         let mut config_changed = false;
         for event in events {
             match event {
-                RuntimeEvent::Effects(effects) => {
-                    config_changed |= apply_runtime_effects(&mut settings.borrow_mut(), &effects);
+                RuntimeEvent::Effects { state, effects } => {
+                    config_changed |= sync_runtime_state(&mut settings.borrow_mut(), state);
                     hud.borrow_mut().observe_effects(&effects);
                     state_changed = true;
                 }
-                RuntimeEvent::Fault(reason) => {
+                RuntimeEvent::Fault { state, reason } => {
+                    config_changed |= sync_runtime_state(&mut settings.borrow_mut(), state);
                     tracing::error!(%reason, "NumFlow background pointer runtime entered safe disabled state");
-                    let effects = settings.borrow_mut().set_enabled(false);
-                    hud.borrow_mut().observe_effects(&effects);
+                    hud.borrow_mut().observe_effects(&[CoreEffect::State(
+                        StateChange::Enabled(false),
+                    )]);
                     state_changed = true;
                 }
             }
@@ -873,12 +883,40 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings};
+    use super::{
+        DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings, sync_runtime_state,
+    };
+    use crate::runtime::RuntimeStateSnapshot;
     use crate::{
         bindings_ui::choice_index,
         config::{AppConfig, InputActionConfig},
     };
     use numflow_core::{Direction, InputAction, MotionConfig, MouseButton, NumpadKey};
+
+    #[test]
+    fn runtime_snapshot_resynchronizes_ui_state_after_event_coalescing() {
+        let mut settings = UiSettings::default();
+        let changed = sync_runtime_state(
+            &mut settings,
+            RuntimeStateSnapshot {
+                enabled: true,
+                selected_button: MouseButton::Right,
+                held_button: Some(MouseButton::Left),
+                precision: true,
+            },
+        );
+
+        assert!(changed);
+        assert!(settings.controller.is_enabled());
+        assert_eq!(settings.controller.selected_button(), MouseButton::Right);
+        assert_eq!(settings.controller.held_button(), Some(MouseButton::Left));
+        assert!(settings.controller.is_precision_enabled());
+        assert_eq!(
+            MouseButton::from(settings.config.active_profile().selected_button),
+            MouseButton::Right
+        );
+        assert!(settings.config.active_profile().precision_enabled);
+    }
 
     #[test]
     fn ui_defaults_match_core_motion_defaults() {
