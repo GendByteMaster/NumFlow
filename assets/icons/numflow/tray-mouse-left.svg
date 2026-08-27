@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- NumFlow tray v2: maximize glyph area for Windows notification-area scaling. -->
   <defs><clipPath id="mouse"><path d="M3.2.65h9.6a2.55 2.55 0 0 1 2.55 2.55v5.35A6.8 6.8 0 0 1 8.55 15.35h-1.1A6.8 6.8 0 0 1 .65 8.55V3.2A2.55 2.55 0 0 1 3.2.65z"/></clipPath></defs>
   <path d="M3.2.65h9.6a2.55 2.55 0 0 1 2.55 2.55v5.35A6.8 6.8 0 0 1 8.55 15.35h-1.1A6.8 6.8 0 0 1 .65 8.55V3.2A2.55 2.55 0 0 1 3.2.65z" fill="#F7F7F7"/>
   <rect x=".65" y=".65" width="5.55" height="6.25" fill="#202020" clip-path="url(#mouse)"/>
