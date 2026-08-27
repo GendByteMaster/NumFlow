@@ -1,0 +1,96 @@
+name: One-shot NumFlow typography polish
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/typography-polish-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  polish-and-validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply typography polish
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+
+          app_path = Path("ui/app.slint")
+          app = app_path.read_text(encoding="utf-8")
+          app_anchor = '''    min-height: 410px;\n    background: transparent;\n'''
+          app_replacement = '''    min-height: 410px;\n    background: transparent;\n    default-font-family: "Segoe UI Variable";\n'''
+          if app_anchor not in app:
+              raise SystemExit("AppWindow typography anchor not found")
+          app = app.replace(app_anchor, app_replacement, 1)
+          # Raise only the intentionally tiny UI labels; keep the compact layout intact.
+          app = app.replace('font-size: 10px;', 'font-size: 11px;')
+          app_path.write_text(app, encoding="utf-8")
+
+          hud_path = Path("ui/hud.slint")
+          hud = hud_path.read_text(encoding="utf-8")
+          hud_anchor = '''    no-frame: true;\n    always-on-top: true;\n'''
+          hud_replacement = '''    no-frame: true;\n    always-on-top: true;\n    default-font-family: "Segoe UI Variable";\n'''
+          if hud_anchor not in hud:
+              raise SystemExit("HudWindow typography anchor not found")
+          hud = hud.replace(hud_anchor, hud_replacement, 1)
+          hud = hud.replace('font-size: 10px;', 'font-size: 11px;')
+          hud_path.write_text(hud, encoding="utf-8")
+          '@ | python -
+
+      - name: Formatting
+        shell: pwsh
+        run: cargo fmt --all
+
+      - name: Formatting check
+        shell: pwsh
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        shell: pwsh
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        shell: pwsh
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        shell: pwsh
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Verify typography guardrails
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $app = Get-Content ui/app.slint -Raw
+          $hud = Get-Content ui/hud.slint -Raw
+          if ($app -notmatch 'default-font-family: "Segoe UI Variable";') { throw 'AppWindow font family missing' }
+          if ($hud -notmatch 'default-font-family: "Segoe UI Variable";') { throw 'HudWindow font family missing' }
+          if ($hud -match 'font-size: 10px;') { throw 'HUD still contains 10px text' }
+
+      - name: Commit validated typography polish
+        shell: pwsh
+        run: |
+          Remove-Item .github/workflows/typography-polish-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor(ui): adopt Windows system typography"
+          git push origin HEAD:dev/master
