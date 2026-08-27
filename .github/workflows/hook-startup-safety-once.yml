@@ -1,0 +1,75 @@
+name: One-shot hook startup safety fix
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/hook-startup-safety-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout dev/master
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Make keyboard interception opt-in at startup
+        shell: pwsh
+        run: |
+          $path = "crates/numflow-windows/src/hook.rs"
+          $text = Get-Content $path -Raw
+          $old = '        INTERCEPTION_ENABLED.store(true, Ordering::Release);'
+          $new = '        INTERCEPTION_ENABLED.store(false, Ordering::Release);'
+          if (-not $text.Contains($old)) {
+            throw "Expected startup interception assignment was not found"
+          }
+          $text = $text.Replace($old, $new)
+
+          $oldDoc = '    /// Starts the global low-level keyboard hook with a bounded event queue.'
+          $newDoc = @'
+    /// Starts the global low-level keyboard hook with a bounded event queue.
+    ///
+    /// Interception starts disabled and must be enabled explicitly after the application runtime
+    /// is ready. This avoids consuming NumPad input during startup before NumFlow is enabled.
+'@
+          if (-not $text.Contains($oldDoc)) {
+            throw "Expected hook documentation marker was not found"
+          }
+          $text = $text.Replace($oldDoc, $newDoc.TrimEnd())
+          Set-Content -Path $path -Value $text -NoNewline
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/hook-startup-safety-once.yml
+          git add crates/numflow-windows/src/hook.rs
+          git commit -m "fix(windows): keep keyboard interception disabled on startup"
+          git push origin HEAD:dev/master
