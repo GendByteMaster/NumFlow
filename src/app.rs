@@ -846,6 +846,19 @@ pub fn run() -> Result<(), AppError> {
     let tray = AppTray::new().map_err(|error| AppError::Ui(error.to_string()))?;
     tracing::info!("NumFlow system tray ready; keyboard runtime is already active");
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
+
+    #[cfg(windows)]
+    if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {
+        tracing::warn!(
+            %error,
+            "failed to remove winit raw-keyboard registration; foreground NumPad interception may be unavailable"
+        );
+    } else {
+        tracing::debug!(
+            "removed winit raw-keyboard registration for foreground WH_KEYBOARD_LL compatibility"
+        );
+    }
+
     sync_window_from_settings(&window, &settings.borrow());
     sync_tray_from_settings(&tray, &settings.borrow());
 

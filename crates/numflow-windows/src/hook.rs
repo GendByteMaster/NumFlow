@@ -15,9 +15,12 @@ use windows::{
         Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
-            Input::KeyboardAndMouse::{
-                GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-                KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VK_NUMLOCK,
+            Input::{
+                KeyboardAndMouse::{
+                    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+                    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VK_NUMLOCK,
+                },
+                RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices,
             },
             WindowsAndMessaging::{
                 CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, MSG,
@@ -35,6 +38,8 @@ use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
 const NUMFLOW_NUM_LOCK_INJECTION_TAG: usize = 0x4E46_4E4C;
 const NUM_LOCK_SCAN_CODE: u16 = 0x45;
+const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
+const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
@@ -72,6 +77,43 @@ pub enum HookError {
     ThreadTerminated,
     #[error("the Windows hook thread panicked")]
     ThreadPanicked,
+}
+
+fn raw_keyboard_removal_device() -> RAWINPUTDEVICE {
+    RAWINPUTDEVICE {
+        usUsagePage: HID_USAGE_PAGE_GENERIC,
+        usUsage: HID_USAGE_GENERIC_KEYBOARD,
+        dwFlags: RIDEV_REMOVE,
+        ..RAWINPUTDEVICE::default()
+    }
+}
+
+/// Removes the process-wide raw-keyboard device-event registration installed by winit.
+///
+/// Winit registers keyboards for raw `DeviceEvent` delivery on Windows. Windows can then stop
+/// dispatching this process's `WH_KEYBOARD_LL` hook while one of the same process's windows owns
+/// foreground focus. `NumFlow` does not consume winit raw `DeviceEvent::Key` events; Slint's normal
+/// window keyboard handling continues through `WM_KEYDOWN` / `WM_KEYUP`. Removing only the raw
+/// keyboard registration therefore keeps the UI keyboard-accessible while restoring `NumFlow`'s
+/// global low-level hook inside its own focused settings window. Raw mouse registration is left
+/// untouched.
+///
+/// This function is intentionally idempotent and should run after Slint/winit has initialized its
+/// event loop.
+///
+/// # Errors
+///
+/// Returns the Win32 error from `RegisterRawInputDevices` if Windows rejects the removal request.
+///
+/// # Panics
+///
+/// Panics only if the compile-time `RAWINPUTDEVICE` size cannot fit in a Win32 `UINT`.
+pub fn remove_raw_keyboard_device_event_registration() -> Result<(), WindowsError> {
+    let device = raw_keyboard_removal_device();
+    let device_size = u32::try_from(size_of::<RAWINPUTDEVICE>())
+        .expect("RAWINPUTDEVICE size must fit in a Win32 UINT");
+
+    unsafe { RegisterRawInputDevices(&[device], device_size) }
 }
 
 #[derive(Debug)]
@@ -535,15 +577,26 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
 #[cfg(test)]
 mod tests {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
+    use windows::Win32::UI::Input::{
+        KeyboardAndMouse::{INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK},
+        RIDEV_REMOVE,
     };
 
     use super::{
-        NUM_LOCK_SCAN_CODE, NUMFLOW_NUM_LOCK_INJECTION_TAG, infer_num_lock_from_numpad,
-        num_lock_replay_inputs, num_lock_transition,
+        HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
+        NUMFLOW_NUM_LOCK_INJECTION_TAG, infer_num_lock_from_numpad, num_lock_replay_inputs,
+        num_lock_transition, raw_keyboard_removal_device,
     };
     use crate::{KeyState, PhysicalKeyEvent};
+
+    #[test]
+    fn raw_keyboard_removal_descriptor_does_not_touch_mouse_registration() {
+        let device = raw_keyboard_removal_device();
+
+        assert_eq!(device.usUsagePage, HID_USAGE_PAGE_GENERIC);
+        assert_eq!(device.usUsage, HID_USAGE_GENERIC_KEYBOARD);
+        assert_eq!(device.dwFlags, RIDEV_REMOVE);
+    }
 
     #[test]
     fn num_lock_toggles_once_per_physical_press() {

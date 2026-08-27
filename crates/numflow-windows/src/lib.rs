@@ -20,7 +20,9 @@ mod startup;
 #[cfg(windows)]
 pub use audio::{AudioCue, AudioFeedbackError, AudioFeedbackService};
 #[cfg(windows)]
-pub use hook::{HookError, KeyboardHook, KeyboardHookEvent};
+pub use hook::{
+    HookError, KeyboardHook, KeyboardHookEvent, remove_raw_keyboard_device_event_registration,
+};
 #[cfg(windows)]
 pub use hud::{HudPosition, configure_hud_native_window, recommended_hud_position};
 #[cfg(windows)]
