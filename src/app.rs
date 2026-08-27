@@ -255,17 +255,10 @@ impl UiSettings {
         profile.precision_multiplier = default_profile.precision_multiplier;
         profile.boost_multiplier = default_profile.boost_multiplier;
         profile.precision_enabled = default_profile.precision_enabled;
-        profile.selected_button = default_profile.selected_button;
         self.motion = profile.motion_config();
 
-        let mut effects = self.controller.apply(InputAction::SelectButton(
-            default_profile.selected_button.into(),
-        ));
-        effects.extend(
-            self.controller
-                .apply(InputAction::SetPrecision(default_profile.precision_enabled)),
-        );
-        effects
+        self.controller
+            .apply(InputAction::SetPrecision(default_profile.precision_enabled))
     }
 
     fn reset_defaults(&mut self) -> Vec<CoreEffect> {
@@ -940,6 +933,15 @@ pub fn run() -> Result<(), AppError> {
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
 
     #[cfg(windows)]
+    match numflow_windows::client_area_animations_enabled() {
+        Ok(enabled) => window.set_reduced_motion(!enabled),
+        Err(error) => tracing::warn!(
+            %error,
+            "failed to read Windows client-area animation preference; using standard UI motion"
+        ),
+    }
+
+    #[cfg(windows)]
     if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {
         tracing::warn!(
             %error,
@@ -1063,6 +1065,27 @@ mod tests {
         assert!((settings.motion.acceleration - 1_600.0).abs() <= f64::EPSILON);
         assert!((settings.config.active_profile().speed - 420.0).abs() <= f64::EPSILON);
         assert!((settings.config.active_profile().acceleration - 1_600.0).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn reset_pointer_settings_preserves_selected_mouse_button() {
+        let mut settings = UiSettings::default();
+        settings.set_mouse_button(MouseButton::Right);
+        settings.set_pointer_speed(640.0);
+        settings.set_pointer_acceleration(2_400.0);
+        settings.set_precision(true);
+
+        let _ = settings.reset_pointer_settings();
+
+        assert_eq!(settings.controller.selected_button(), MouseButton::Right);
+        assert!(
+            (settings.motion.base_speed - f64::from(DEFAULT_POINTER_SPEED)).abs() <= f64::EPSILON
+        );
+        assert!(
+            (settings.motion.acceleration - f64::from(DEFAULT_POINTER_ACCELERATION)).abs()
+                <= f64::EPSILON
+        );
+        assert!(!settings.controller.is_precision_enabled());
     }
 
     #[test]

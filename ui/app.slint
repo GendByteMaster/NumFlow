@@ -15,9 +15,9 @@ export component AppWindow inherits Window {
     title: "NumFlow";
     icon: @image-url("../assets/numflow-icon.svg");
     preferred-width: 600px;
-    preferred-height: 410px;
+    preferred-height: 420px;
     min-width: 540px;
-    min-height: 360px;
+    min-height: 390px;
     background: NumFlowTheme.background;
 
     in-out property <bool> numflow-enabled: false;
@@ -60,6 +60,26 @@ export component AppWindow inherits Window {
     callback reset-bindings();
     callback reset-defaults();
     callback runtime-events-ready();
+
+    function binding-glyph(label: string) -> string {
+        return label == "Up-left" ? "↖" :
+            label == "Up" ? "↑" :
+            label == "Up-right" ? "↗" :
+            label == "Left" ? "←" :
+            label == "Right" ? "→" :
+            label == "Down-left" ? "↙" :
+            label == "Down" ? "↓" :
+            label == "Down-right" ? "↘" :
+            label == "Click" || label == "Single click" ? "•" :
+            label == "Double click" ? "••" :
+            label == "Hold / drag" ? "⌁" :
+            label == "Release" ? "↥" : "";
+    }
+
+    function binding-display(label: string) -> string {
+        let glyph = root.binding-glyph(label);
+        return glyph == "" ? label : glyph + "  " + label;
+    }
 
     function mark-saved() {
         root.saved-visible = true;
@@ -122,8 +142,10 @@ export component AppWindow inherits Window {
                     alignment: end;
 
                     Button { text: "Cancel"; clicked => { reset-dialog.close(); } }
-                    Button {
+                    UtilityButton {
                         text: "Reset all";
+                        destructive: true;
+                        min-width: 76px;
                         clicked => {
                             root.reset-defaults();
                             root.mark-saved();
@@ -235,19 +257,19 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 1px;
-                        MappingRow { key-label: "7"; action-label: "↖  " + root.numpad-seven-label; }
-                        MappingRow { key-label: "8"; action-label: "↑  " + root.numpad-eight-label; }
-                        MappingRow { key-label: "9"; action-label: "↗  " + root.numpad-nine-label; }
-                        MappingRow { key-label: "4"; action-label: "←  " + root.numpad-four-label; }
+                        MappingRow { key-label: "7"; action-label: root.binding-display(root.numpad-seven-label); }
+                        MappingRow { key-label: "8"; action-label: root.binding-display(root.numpad-eight-label); }
+                        MappingRow { key-label: "9"; action-label: root.binding-display(root.numpad-nine-label); }
+                        MappingRow { key-label: "4"; action-label: root.binding-display(root.numpad-four-label); }
                     }
 
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 1px;
-                        MappingRow { key-label: "6"; action-label: "→  " + root.numpad-six-label; }
-                        MappingRow { key-label: "1"; action-label: "↙  " + root.numpad-one-label; }
-                        MappingRow { key-label: "2"; action-label: "↓  " + root.numpad-two-label; }
-                        MappingRow { key-label: "3"; action-label: "↘  " + root.numpad-three-label; }
+                        MappingRow { key-label: "6"; action-label: root.binding-display(root.numpad-six-label); }
+                        MappingRow { key-label: "1"; action-label: root.binding-display(root.numpad-one-label); }
+                        MappingRow { key-label: "2"; action-label: root.binding-display(root.numpad-two-label); }
+                        MappingRow { key-label: "3"; action-label: root.binding-display(root.numpad-three-label); }
                     }
                 }
 
@@ -259,15 +281,15 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 1px;
-                        MappingRow { key-label: "5"; action-label: root.numpad-five-label; }
-                        MappingRow { key-label: "0"; action-label: root.numpad-zero-label; }
+                        MappingRow { key-label: "5"; action-label: root.binding-display(root.numpad-five-label); }
+                        MappingRow { key-label: "0"; action-label: root.binding-display(root.numpad-zero-label); }
                     }
 
                     VerticalLayout {
                         horizontal-stretch: 1;
                         spacing: 1px;
-                        MappingRow { key-label: "+"; action-label: root.numpad-add-label; }
-                        MappingRow { key-label: "Del"; action-label: root.numpad-decimal-label; }
+                        MappingRow { key-label: "+"; action-label: root.binding-display(root.numpad-add-label); }
+                        MappingRow { key-label: "Del"; action-label: root.binding-display(root.numpad-decimal-label); }
                     }
                 }
 

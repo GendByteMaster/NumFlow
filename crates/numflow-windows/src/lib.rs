@@ -5,6 +5,8 @@ pub use keymap::{KeyState, PhysicalKeyEvent, map_numpad_key};
 pub use normalize::{KeyboardEventNormalizer, NormalizedKeyEvent};
 
 #[cfg(windows)]
+mod accessibility;
+#[cfg(windows)]
 mod audio;
 #[cfg(windows)]
 mod hook;
@@ -17,6 +19,8 @@ mod pointer;
 #[cfg(windows)]
 mod startup;
 
+#[cfg(windows)]
+pub use accessibility::client_area_animations_enabled;
 #[cfg(windows)]
 pub use audio::{AudioCue, AudioFeedbackError, AudioFeedbackService};
 #[cfg(windows)]
