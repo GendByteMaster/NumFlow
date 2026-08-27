@@ -29,6 +29,21 @@ jobs:
       - name: Apply Num Lock mode patch
         run: python scripts/_numlock_audio_patch.py
 
+      - name: Repair GetKeyState namespace
+        shell: pwsh
+        run: |
+          $path = "crates/numflow-windows/src/hook.rs"
+          $text = Get-Content $path -Raw
+          $text = $text.Replace(
+            "Input::KeyboardAndMouse::VK_NUMLOCK,",
+            "Input::KeyboardAndMouse::{GetKeyState, VK_NUMLOCK},"
+          )
+          $text = $text.Replace(
+            "CallNextHookEx, GetKeyState, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,",
+            "CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,"
+          )
+          Set-Content $path $text -NoNewline
+
       - name: Format
         run: cargo fmt --all
 
