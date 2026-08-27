@@ -1,5 +1,8 @@
-import { Button, ComboBox, ScrollView, Slider, Switch } from "std-widgets.slint";
-import { KeyTile, NumFlowTheme, SectionTitle, SegmentedOption, Separator } from "design-system.slint";
+import { Button, ComboBox, Slider, Switch } from "std-widgets.slint";
+import {
+    DisclosureRow, MappingRow, MenuAction, NumFlowTheme, SegmentedControl,
+    Separator, UtilityButton
+} from "design-system.slint";
 export * from "hud.slint";
 
 export enum MouseButtonMode {
@@ -12,9 +15,9 @@ export component AppWindow inherits Window {
     title: "NumFlow";
     icon: @image-url("../assets/numflow-icon.svg");
     preferred-width: 600px;
-    preferred-height: 690px;
-    min-width: 520px;
-    min-height: 500px;
+    preferred-height: 410px;
+    min-width: 540px;
+    min-height: 360px;
     background: NumFlowTheme.background;
 
     in-out property <bool> numflow-enabled: false;
@@ -39,8 +42,10 @@ export component AppWindow inherits Window {
     in-out property <string> numpad-nine-label: "Up-right";
     in-out property <string> numpad-add-label: "Double click";
     in-out property <string> numpad-decimal-label: "Release";
+    in property <bool> reduced-motion: false;
 
-    private property <bool> bindings-editor-visible: false;
+    private property <bool> advanced-open: false;
+    private property <bool> saved-visible: false;
 
     callback enabled-toggled(bool);
     callback mouse-button-changed(MouseButtonMode);
@@ -51,40 +56,53 @@ export component AppWindow inherits Window {
     callback profile-changed(string);
     callback binding-key-changed(int);
     callback binding-action-changed(int);
+    callback reset-pointer-settings();
     callback reset-bindings();
     callback reset-defaults();
     callback runtime-events-ready();
 
-    private property <string> active-button-label:
-        root.active-button == MouseButtonMode.left ? "Left" :
-        root.active-button == MouseButtonMode.right ? "Right" : "Middle";
+    function mark-saved() {
+        root.saved-visible = true;
+        saved-timer.running = true;
+        saved-timer.restart();
+    }
 
-    private property <image> active-button-icon:
-        root.active-button == MouseButtonMode.left
-            ? @image-url("../assets/icons/numflow/mouse-left.svg")
-            : root.active-button == MouseButtonMode.right
-                ? @image-url("../assets/icons/numflow/mouse-right.svg")
-                : @image-url("../assets/icons/numflow/mouse-middle.svg");
+    saved-timer := Timer {
+        interval: 1600ms;
+        running: false;
+        triggered() => {
+            root.saved-visible = false;
+            self.running = false;
+        }
+    }
 
     reset-dialog := PopupWindow {
-        width: 352px;
-        height: 168px;
-        x: root.width - self.width - 16px;
-        y: root.height - self.height - 52px;
+        width: 360px;
+        height: 170px;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
         close-policy: close-on-click-outside;
 
         Rectangle {
-            background: NumFlowTheme.surface;
+            background: NumFlowTheme.material;
             border-width: 1px;
             border-color: NumFlowTheme.separator;
-            border-radius: 12px;
+            border-radius: NumFlowTheme.radius-large;
+
+            Rectangle {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: 1px;
+                background: #ffffff2a;
+            }
 
             VerticalLayout {
-                padding: 16px;
+                padding: 18px;
                 spacing: 10px;
 
                 Text {
-                    text: "Reset NumFlow settings?";
+                    text: "Reset all NumFlow settings?";
                     color: NumFlowTheme.label;
                     font-size: 15px;
                     font-weight: 600;
@@ -97,24 +115,18 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                 }
 
-                Rectangle {
-                    vertical-stretch: 1;
-                    background: transparent;
-                }
+                Rectangle { vertical-stretch: 1; background: transparent; }
 
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: end;
 
+                    Button { text: "Cancel"; clicked => { reset-dialog.close(); } }
                     Button {
-                        text: "Cancel";
-                        clicked => { reset-dialog.close(); }
-                    }
-
-                    Button {
-                        text: "Reset";
+                        text: "Reset all";
                         clicked => {
                             root.reset-defaults();
+                            root.mark-saved();
                             reset-dialog.close();
                         }
                     }
@@ -123,79 +135,208 @@ export component AppWindow inherits Window {
         }
     }
 
-    VerticalLayout {
-        spacing: 0px;
+    more-menu := PopupWindow {
+        width: 214px;
+        height: 122px;
+        x: root.width - self.width - 20px;
+        y: root.height - self.height - 52px;
+        close-policy: close-on-click-outside;
 
         Rectangle {
-            min-height: 66px;
-            max-height: 66px;
-            background: transparent;
+            background: NumFlowTheme.material;
+            border-width: 1px;
+            border-color: NumFlowTheme.separator;
+            border-radius: NumFlowTheme.radius-medium;
 
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 11px;
-                padding-bottom: 11px;
-                spacing: 10px;
-                cross-axis-alignment: center;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 2px;
 
-                Image {
-                    source: @image-url("../assets/numflow-icon.svg");
-                    min-width: 32px;
-                    max-width: 32px;
-                    min-height: 32px;
-                    max-height: 32px;
-                    image-fit: contain;
-                    accessible-role: none;
-                }
-
-                VerticalLayout {
-                    spacing: 1px;
-                    alignment: center;
-
-                    Text {
-                        text: "NumFlow";
-                        color: NumFlowTheme.label;
-                        font-size: 20px;
-                        font-weight: 600;
-                    }
-
-                    Text {
-                        text: "Precise pointer control from your keyboard";
-                        color: NumFlowTheme.secondary-label;
-                        font-size: 11px;
+                MenuAction {
+                    text: "Reset pointer settings";
+                    clicked => {
+                        root.reset-pointer-settings();
+                        root.mark-saved();
+                        more-menu.close();
                     }
                 }
 
-                Rectangle {
-                    horizontal-stretch: 1;
-                    background: transparent;
+                MenuAction {
+                    text: "Reset bindings";
+                    clicked => {
+                        root.reset-bindings();
+                        root.mark-saved();
+                        more-menu.close();
+                    }
                 }
 
-                Switch {
-                    accessible-label: "NumFlow";
-                    text: root.numflow-enabled ? "On" : "Off";
-                    checked <=> root.numflow-enabled;
-                    toggled => { root.enabled-toggled(self.checked); }
+                MenuAction {
+                    text: "Reset all settings…";
+                    destructive: true;
+                    clicked => {
+                        more-menu.close();
+                        reset-dialog.show();
+                    }
                 }
             }
         }
+    }
 
-        Separator { }
+    bindings-panel := PopupWindow {
+        width: 510px;
+        height: 392px;
+        x: (root.width - self.width) / 2;
+        y: 10px;
+        close-policy: close-on-click-outside;
 
         Rectangle {
-            min-height: 40px;
-            max-height: 40px;
-            background: NumFlowTheme.surface;
+            background: NumFlowTheme.material;
+            border-width: 1px;
+            border-color: NumFlowTheme.separator;
+            border-radius: NumFlowTheme.radius-large;
 
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 18px;
-                cross-axis-alignment: center;
+            Rectangle {
+                x: 1px;
+                y: 1px;
+                width: parent.width - 2px;
+                height: 1px;
+                background: #ffffff2a;
+            }
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 10px;
 
                 HorizontalLayout {
-                    spacing: 6px;
+                    cross-axis-alignment: center;
+
+                    VerticalLayout {
+                        spacing: 1px;
+                        Text { text: "Bindings"; color: NumFlowTheme.label; font-size: 16px; font-weight: 600; }
+                        Text { text: "Profile · " + root.active-profile; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    UtilityButton {
+                        text: "Done";
+                        min-width: 58px;
+                        clicked => { bindings-panel.close(); }
+                    }
+                }
+
+                Separator { }
+
+                Text { text: "Pointer movement"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+
+                HorizontalLayout {
+                    spacing: 24px;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 1px;
+                        MappingRow { key-label: "7"; action-label: "↖  " + root.numpad-seven-label; }
+                        MappingRow { key-label: "8"; action-label: "↑  " + root.numpad-eight-label; }
+                        MappingRow { key-label: "9"; action-label: "↗  " + root.numpad-nine-label; }
+                        MappingRow { key-label: "4"; action-label: "←  " + root.numpad-four-label; }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 1px;
+                        MappingRow { key-label: "6"; action-label: "→  " + root.numpad-six-label; }
+                        MappingRow { key-label: "1"; action-label: "↙  " + root.numpad-one-label; }
+                        MappingRow { key-label: "2"; action-label: "↓  " + root.numpad-two-label; }
+                        MappingRow { key-label: "3"; action-label: "↘  " + root.numpad-three-label; }
+                    }
+                }
+
+                Text { text: "Mouse"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+
+                HorizontalLayout {
+                    spacing: 24px;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 1px;
+                        MappingRow { key-label: "5"; action-label: root.numpad-five-label; }
+                        MappingRow { key-label: "0"; action-label: root.numpad-zero-label; }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 1px;
+                        MappingRow { key-label: "+"; action-label: root.numpad-add-label; }
+                        MappingRow { key-label: "Del"; action-label: root.numpad-decimal-label; }
+                    }
+                }
+
+                Separator { }
+
+                Text { text: "Edit binding"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        accessible-label: "NumPad key";
+                        model: [
+                            "Num 8", "Num 2", "Num 4", "Num 6", "Num 7",
+                            "Num 9", "Num 1", "Num 3", "Num 5", "Num +",
+                            "Num 0", "Num .", "Num /", "Num *", "Num -"
+                        ];
+                        current-index <=> root.binding-key-index;
+                        selected(value) => { root.binding-key-changed(self.current-index); }
+                    }
+
+                    ComboBox {
+                        horizontal-stretch: 2;
+                        accessible-label: "Binding action";
+                        model: [
+                            "Unbound",
+                            "Move up", "Move down", "Move left", "Move right",
+                            "Move up-left", "Move up-right", "Move down-left", "Move down-right",
+                            "Single click", "Double click", "Hold / drag", "Release",
+                            "Select left button", "Select right button", "Select middle button",
+                            "Precision on", "Precision off"
+                        ];
+                        current-index <=> root.binding-action-index;
+                        selected(value) => {
+                            root.binding-action-changed(self.current-index);
+                            root.mark-saved();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        background: NumFlowTheme.material;
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 1px;
+            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff2b 50%, #ffffff00 100%);
+        }
+
+        VerticalLayout {
+            padding-left: 22px;
+            padding-right: 22px;
+            padding-top: 18px;
+            padding-bottom: 18px;
+            spacing: 0px;
+
+            Rectangle {
+                min-height: 38px;
+                max-height: 38px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 8px;
                     cross-axis-alignment: center;
 
                     Text {
@@ -205,342 +346,288 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: root.numflow-enabled ? "Active" : "Inactive";
+                        text: root.numflow-enabled ? "Active" : "Disabled";
                         color: NumFlowTheme.label;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 6px;
-                    cross-axis-alignment: center;
-
-                    Image {
-                        source: root.active-button-icon;
-                        min-width: 18px;
-                        max-width: 18px;
-                        min-height: 18px;
-                        max-height: 18px;
-                        image-fit: contain;
-                        accessible-role: none;
+                        font-size: 13px;
+                        font-weight: 550;
                     }
 
-                    Text {
-                        text: "Mouse: " + root.active-button-label;
-                        color: NumFlowTheme.label;
-                        font-size: 12px;
-                    }
-                }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                HorizontalLayout {
-                    spacing: 6px;
-                    cross-axis-alignment: center;
-
-                    Image {
-                        source: @image-url("../assets/icons/numflow/precision-mode.svg");
-                        min-width: 17px;
-                        max-width: 17px;
-                        min-height: 17px;
-                        max-height: 17px;
-                        image-fit: contain;
-                        accessible-role: none;
-                    }
-
-                    Text {
-                        text: "Precision: " + (root.precision-enabled ? "On" : "Off");
-                        color: NumFlowTheme.label;
-                        font-size: 12px;
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                    background: transparent;
-                }
-            }
-        }
-
-        Separator { }
-
-        ScrollView {
-            vertical-stretch: 1;
-            horizontal-scrollbar-policy: always-off;
-            vertical-scrollbar-policy: as-needed;
-            mouse-drag-pan-enabled: false;
-
-            VerticalLayout {
-                min-width: 480px;
-                padding: 16px;
-                spacing: 18px;
-
-                VerticalLayout {
-                    spacing: 8px;
-
-                    SectionTitle { label: "NumPad"; }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        KeyTile { horizontal-stretch: 1; key-label: "↖ 7"; action-label: root.numpad-seven-label; active: root.active-key == "7"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "↑ 8"; action-label: root.numpad-eight-label; active: root.active-key == "8"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "9 ↗"; action-label: root.numpad-nine-label; active: root.active-key == "9"; }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        KeyTile { horizontal-stretch: 1; key-label: "← 4"; action-label: root.numpad-four-label; active: root.active-key == "4"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "5"; action-label: root.numpad-five-label; active: root.active-key == "5"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "6 →"; action-label: root.numpad-six-label; active: root.active-key == "6"; }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        KeyTile { horizontal-stretch: 1; key-label: "↙ 1"; action-label: root.numpad-one-label; active: root.active-key == "1"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "↓ 2"; action-label: root.numpad-two-label; active: root.active-key == "2"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "3 ↘"; action-label: root.numpad-three-label; active: root.active-key == "3"; }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        KeyTile { horizontal-stretch: 1; key-label: "0"; action-label: root.numpad-zero-label; active: root.active-key == "0"; }
-                        KeyTile { horizontal-stretch: 1; key-label: "+"; action-label: root.numpad-add-label; active: root.active-key == "+"; }
-                        KeyTile { horizontal-stretch: 1; key-label: ". / Del"; action-label: root.numpad-decimal-label; active: root.active-key == "."; }
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-
-                    SectionTitle { label: "Mouse Button"; }
-
-                    Rectangle {
-                        min-height: 38px;
-                        max-height: 38px;
-                        background: NumFlowTheme.surface;
-                        border-width: 1px;
-                        border-color: NumFlowTheme.separator;
-                        border-radius: NumFlowTheme.radius-medium;
-
-                        HorizontalLayout {
-                            padding: 3px;
-                            spacing: 3px;
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Left";
-                                selected: root.active-button == MouseButtonMode.left;
-                                clicked => { root.active-button = MouseButtonMode.left; root.mouse-button-changed(MouseButtonMode.left); }
-                            }
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Right";
-                                selected: root.active-button == MouseButtonMode.right;
-                                clicked => { root.active-button = MouseButtonMode.right; root.mouse-button-changed(MouseButtonMode.right); }
-                            }
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Middle";
-                                selected: root.active-button == MouseButtonMode.middle;
-                                clicked => { root.active-button = MouseButtonMode.middle; root.mouse-button-changed(MouseButtonMode.middle); }
-                            }
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 9px;
-
-                    SectionTitle { label: "Pointer"; }
-
-                    Rectangle {
-                        min-height: 38px;
-                        max-height: 38px;
-                        background: NumFlowTheme.surface;
-                        border-width: 1px;
-                        border-color: NumFlowTheme.separator;
-                        border-radius: NumFlowTheme.radius-medium;
-
-                        HorizontalLayout {
-                            padding: 3px;
-                            spacing: 3px;
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Normal";
-                                selected: root.active-profile == "Normal";
-                                clicked => { root.active-profile = "Normal"; root.profile-changed("Normal"); }
-                            }
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Precision";
-                                selected: root.active-profile == "Precision";
-                                clicked => { root.active-profile = "Precision"; root.profile-changed("Precision"); }
-                            }
-
-                            SegmentedOption {
-                                horizontal-stretch: 1;
-                                label: "Fast";
-                                selected: root.active-profile == "Fast";
-                                clicked => { root.active-profile = "Fast"; root.profile-changed("Fast"); }
-                            }
-                        }
-                    }
-
-                    VerticalLayout {
-                        spacing: 3px;
-
-                        HorizontalLayout {
-                            Text { text: "Speed"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            Text { text: "\{Math.round(root.pointer-speed)} px/s"; color: NumFlowTheme.secondary-label; font-size: 11px; }
-                        }
-
-                        Slider {
-                            accessible-label: "Pointer speed";
-                            minimum: 40;
-                            maximum: 800;
-                            step: 10;
-                            value <=> root.pointer-speed;
-                            changed(value) => { root.speed-changed(value); }
-                        }
-
-                        HorizontalLayout {
-                            Text { text: "40"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            Text { text: "800"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                        }
-                    }
-
-                    VerticalLayout {
-                        spacing: 3px;
-
-                        HorizontalLayout {
-                            Text { text: "Acceleration"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            Text { text: "\{Math.round(root.pointer-acceleration)} px/s²"; color: NumFlowTheme.secondary-label; font-size: 11px; }
-                        }
-
-                        Slider {
-                            accessible-label: "Pointer acceleration";
-                            minimum: 0;
-                            maximum: 3000;
-                            step: 50;
-                            value <=> root.pointer-acceleration;
-                            changed(value) => { root.acceleration-changed(value); }
-                        }
-
-                        HorizontalLayout {
-                            Text { text: "0"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            Text { text: "3000"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                        }
-                    }
-
-                    Rectangle {
-                        min-height: 48px;
-                        background: transparent;
-
-                        HorizontalLayout {
-                            spacing: 12px;
-                            cross-axis-alignment: center;
-
-                            VerticalLayout {
-                                spacing: 1px;
-                                Text { text: "Precision mode"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                                Text { text: "Reduce pointer speed for precise movement"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                            }
-
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-
-                            Switch {
-                                accessible-label: "Precision mode";
-                                text: root.precision-enabled ? "On" : "Off";
-                                checked <=> root.precision-enabled;
-                                toggled => { root.precision-toggled(self.checked); }
-                            }
-                        }
-                    }
-                }
-
-                if root.bindings-editor-visible: VerticalLayout {
-                    spacing: 8px;
-
-                    Separator { }
-
-                    HorizontalLayout {
-                        SectionTitle { label: "Key bindings · " + root.active-profile; }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                        Text { text: "Changes apply immediately"; color: NumFlowTheme.secondary-label; font-size: 10px; vertical-alignment: center; }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 8px;
-
-                        ComboBox {
-                            horizontal-stretch: 1;
-                            accessible-label: "NumPad key";
-                            model: [
-                                "Num 8", "Num 2", "Num 4", "Num 6", "Num 7",
-                                "Num 9", "Num 1", "Num 3", "Num 5", "Num +",
-                                "Num 0", "Num .", "Num /", "Num *", "Num -"
-                            ];
-                            current-index <=> root.binding-key-index;
-                            selected(value) => { root.binding-key-changed(self.current-index); }
-                        }
-
-                        ComboBox {
-                            horizontal-stretch: 2;
-                            accessible-label: "Binding action";
-                            model: [
-                                "Unbound",
-                                "Move up", "Move down", "Move left", "Move right",
-                                "Move up-left", "Move up-right", "Move down-left", "Move down-right",
-                                "Single click", "Double click", "Hold / drag", "Release",
-                                "Select left button", "Select right button", "Select middle button",
-                                "Precision on", "Precision off"
-                            ];
-                            current-index <=> root.binding-action-index;
-                            selected(value) => { root.binding-action-changed(self.current-index); }
-                        }
-
-                        Button { text: "Reset bindings"; clicked => { root.reset-bindings(); } }
+                    Switch {
+                        accessible-label: "NumFlow";
+                        text: root.numflow-enabled ? "On" : "Off";
+                        checked <=> root.numflow-enabled;
+                        toggled => { root.enabled-toggled(self.checked); }
                     }
                 }
             }
-        }
 
-        Separator { }
+            Rectangle { min-height: 16px; max-height: 16px; background: transparent; }
 
-        Rectangle {
-            min-height: 46px;
-            max-height: 46px;
-            background: NumFlowTheme.surface;
+            Rectangle {
+                min-height: 36px;
+                max-height: 36px;
+                background: transparent;
 
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 10px;
-                cross-axis-alignment: center;
+                HorizontalLayout {
+                    spacing: 14px;
+                    cross-axis-alignment: center;
 
-                Text { text: "✓ Saved automatically"; color: NumFlowTheme.secondary-label; font-size: 10px; }
-                Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Text {
+                        text: "Mouse";
+                        color: NumFlowTheme.label;
+                        font-size: 12px;
+                        font-weight: 500;
+                        min-width: 86px;
+                        max-width: 86px;
+                    }
 
-                Switch {
-                    accessible-label: "HUD";
-                    text: "HUD";
-                    checked <=> root.hud-enabled;
-                    toggled => { root.hud-toggled(self.checked); }
+                    SegmentedControl {
+                        horizontal-stretch: 1;
+                        first-label: "Left";
+                        second-label: "Right";
+                        third-label: "Middle";
+                        selected-index: root.active-button == MouseButtonMode.left ? 0 : root.active-button == MouseButtonMode.right ? 1 : 2;
+                        reduced-motion: root.reduced-motion;
+                        selected(index) => {
+                            root.active-button = index == 0 ? MouseButtonMode.left : index == 1 ? MouseButtonMode.right : MouseButtonMode.middle;
+                            root.mouse-button-changed(root.active-button);
+                            root.mark-saved();
+                        }
+                    }
+                }
+            }
+
+            Rectangle { min-height: 12px; max-height: 12px; background: transparent; }
+
+            Rectangle {
+                min-height: 36px;
+                max-height: 36px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 14px;
+                    cross-axis-alignment: center;
+
+                    Text {
+                        text: "Pointer";
+                        color: NumFlowTheme.label;
+                        font-size: 12px;
+                        font-weight: 500;
+                        min-width: 86px;
+                        max-width: 86px;
+                    }
+
+                    SegmentedControl {
+                        horizontal-stretch: 1;
+                        first-label: "Normal";
+                        second-label: "Precision";
+                        third-label: "Fast";
+                        selected-index: root.active-profile == "Normal" ? 0 : root.active-profile == "Precision" ? 1 : 2;
+                        reduced-motion: root.reduced-motion;
+                        selected(index) => {
+                            root.active-profile = index == 0 ? "Normal" : index == 1 ? "Precision" : "Fast";
+                            root.profile-changed(root.active-profile);
+                            root.mark-saved();
+                        }
+                    }
+                }
+            }
+
+            Rectangle { min-height: 20px; max-height: 20px; background: transparent; }
+
+            Rectangle {
+                min-height: 32px;
+                max-height: 32px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    cross-axis-alignment: center;
+
+                    Text {
+                        text: "Speed";
+                        color: NumFlowTheme.label;
+                        font-size: 12px;
+                        font-weight: 500;
+                        min-width: 86px;
+                        max-width: 86px;
+                    }
+
+                    Slider {
+                        horizontal-stretch: 1;
+                        accessible-label: "Pointer speed";
+                        minimum: 40;
+                        maximum: 800;
+                        step: 10;
+                        value <=> root.pointer-speed;
+                        changed(value) => {
+                            root.speed-changed(value);
+                            root.mark-saved();
+                        }
+                    }
+
+                    Text {
+                        text: "\{Math.round(root.pointer-speed)} px/s";
+                        color: NumFlowTheme.secondary-label;
+                        font-size: 11px;
+                        font-weight: 500;
+                        horizontal-alignment: right;
+                        min-width: 74px;
+                        max-width: 74px;
+                    }
+                }
+            }
+
+            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
+
+            Rectangle {
+                min-height: 32px;
+                max-height: 32px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    cross-axis-alignment: center;
+
+                    Text {
+                        text: "Acceleration";
+                        color: NumFlowTheme.label;
+                        font-size: 12px;
+                        font-weight: 500;
+                        min-width: 86px;
+                        max-width: 86px;
+                    }
+
+                    Slider {
+                        horizontal-stretch: 1;
+                        accessible-label: "Pointer acceleration";
+                        minimum: 0;
+                        maximum: 3000;
+                        step: 50;
+                        value <=> root.pointer-acceleration;
+                        changed(value) => {
+                            root.acceleration-changed(value);
+                            root.mark-saved();
+                        }
+                    }
+
+                    Text {
+                        text: "\{Math.round(root.pointer-acceleration)} px/s²";
+                        color: NumFlowTheme.secondary-label;
+                        font-size: 11px;
+                        font-weight: 500;
+                        horizontal-alignment: right;
+                        min-width: 74px;
+                        max-width: 74px;
+                    }
+                }
+            }
+
+            Rectangle { min-height: 14px; max-height: 14px; background: transparent; }
+
+            DisclosureRow {
+                label: "Advanced";
+                expanded: root.advanced-open;
+                reduced-motion: root.reduced-motion;
+                toggled => { root.advanced-open = !root.advanced-open; }
+            }
+
+            advanced-content := Rectangle {
+                min-height: root.advanced-open ? 54px : 0px;
+                max-height: root.advanced-open ? 54px : 0px;
+                opacity: root.advanced-open ? 1 : 0;
+                clip: true;
+                background: transparent;
+
+                animate min-height, max-height, opacity {
+                    duration: root.reduced-motion ? 0ms : 210ms;
+                    easing: ease-out;
                 }
 
-                Button {
-                    text: root.bindings-editor-visible ? "Done" : "Bindings…";
-                    clicked => { root.bindings-editor-visible = !root.bindings-editor-visible; }
-                }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 2px;
+                    spacing: 12px;
+                    cross-axis-alignment: center;
 
-                Button { text: "Reset…"; clicked => { reset-dialog.show(); } }
+                    VerticalLayout {
+                        spacing: 1px;
+                        Text { text: "Precision mode"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
+                        Text { text: "Reduce pointer speed for fine movement"; color: NumFlowTheme.secondary-label; font-size: 10px; }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    Switch {
+                        enabled: root.advanced-open;
+                        accessible-label: "Precision mode";
+                        text: root.precision-enabled ? "On" : "Off";
+                        checked <=> root.precision-enabled;
+                        toggled => {
+                            root.precision-toggled(self.checked);
+                            root.mark-saved();
+                        }
+                    }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; background: transparent; }
+
+            Separator { }
+
+            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
+
+            Rectangle {
+                min-height: 34px;
+                max-height: 34px;
+                background: transparent;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    cross-axis-alignment: center;
+
+                    Text {
+                        text: "HUD";
+                        color: NumFlowTheme.label;
+                        font-size: 12px;
+                        font-weight: 500;
+                    }
+
+                    Switch {
+                        accessible-label: "HUD";
+                        text: "";
+                        checked <=> root.hud-enabled;
+                        toggled => {
+                            root.hud-toggled(self.checked);
+                            root.mark-saved();
+                        }
+                    }
+
+                    Text {
+                        text: "✓ Saved";
+                        color: NumFlowTheme.secondary-label;
+                        font-size: 10px;
+                        opacity: root.saved-visible ? 1 : 0;
+                        animate opacity { duration: root.reduced-motion ? 0ms : 140ms; }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    UtilityButton {
+                        text: "Bindings…";
+                        min-width: 82px;
+                        clicked => { bindings-panel.show(); }
+                    }
+
+                    UtilityButton {
+                        text: "⋯";
+                        min-width: 34px;
+                        max-width: 34px;
+                        clicked => { more-menu.show(); }
+                    }
+                }
             }
         }
     }
