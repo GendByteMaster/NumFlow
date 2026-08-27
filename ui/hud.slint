@@ -54,9 +54,11 @@ export component HudWindow inherits Window {
         border-width: root.persistent ? 1px : 1px;
         border-color: root.persistent ? #64d2ff82 : NumFlowTheme.glass-border;
         border-radius: 17px;
-        drop-shadow-blur: 18px;
+        // Keep the shadow within the 288x84 transparent HWND. A large blur is clipped by
+        // the native window bounds and produces uneven dark edges at fractional DPI scales.
+        drop-shadow-blur: 5px;
         drop-shadow-color: NumFlowTheme.shadow-color;
-        drop-shadow-offset-y: 5px;
+        drop-shadow-offset-y: 1px;
 
         animate y, opacity {
             duration: root.reduced-motion ? 0ms : 180ms;
