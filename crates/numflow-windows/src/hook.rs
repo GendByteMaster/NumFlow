@@ -1,5 +1,6 @@
 use std::{
     io,
+    mem::size_of,
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -14,11 +15,15 @@ use windows::{
         Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
-            Input::KeyboardAndMouse::{GetKeyState, VK_NUMLOCK},
+            Input::KeyboardAndMouse::{
+                GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+                KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VK_NUMLOCK,
+            },
             WindowsAndMessaging::{
-                CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, PM_NOREMOVE,
-                PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-                WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, MSG,
+                PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
+                UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
+                WM_SYSKEYUP,
             },
         },
     },
@@ -28,10 +33,12 @@ use windows::{
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
+const NUMFLOW_NUM_LOCK_INJECTION_TAG: usize = 0x4E46_4E4C;
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
 static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+static NUM_LOCK_REPLAY_FALLBACK: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHookEvent {
@@ -201,6 +208,7 @@ fn hook_thread(
     let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
     NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
+    NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
 
     let module = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => module,
@@ -239,6 +247,7 @@ fn hook_thread(
 
     let loop_result = run_message_loop();
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
     clear_dispatcher();
     let unhook_result = unsafe { UnhookWindowsHookEx(hook) };
 
@@ -338,6 +347,70 @@ fn observe_num_lock(state: KeyState) -> Option<bool> {
     changed
 }
 
+fn dispatch_num_lock_change(state: KeyState) -> Option<bool> {
+    let changed = observe_num_lock(state);
+    if let Some(num_lock_on) = changed {
+        let _ = dispatch_event(KeyboardHookEvent::NumLockChanged { num_lock_on }, true);
+    }
+    changed
+}
+
+fn num_lock_replay_inputs() -> [INPUT; 2] {
+    [
+        num_lock_keyboard_input(KEYEVENTF_EXTENDEDKEY),
+        num_lock_keyboard_input(KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
+    ]
+}
+
+fn num_lock_keyboard_input(flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_NUMLOCK,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: NUMFLOW_NUM_LOCK_INJECTION_TAG,
+            },
+        },
+    }
+}
+
+fn replay_num_lock_to_windows() -> bool {
+    let inputs = num_lock_replay_inputs();
+    let input_size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+    let inserted = unsafe { SendInput(&inputs, input_size) };
+    inserted == u32::try_from(inputs.len()).expect("Num Lock replay batch length fits in u32")
+}
+
+fn is_numflow_num_lock_replay(keyboard: KBDLLHOOKSTRUCT) -> bool {
+    keyboard.flags.0 & LLKHF_INJECTED.0 != 0
+        && keyboard.dwExtraInfo == NUMFLOW_NUM_LOCK_INJECTION_TAG
+}
+
+fn intercept_physical_num_lock(state: KeyState) -> bool {
+    let fallback = NUM_LOCK_REPLAY_FALLBACK.load(Ordering::Acquire);
+    let changed = dispatch_num_lock_change(state);
+
+    if fallback {
+        if state == KeyState::Released {
+            NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
+        }
+        return false;
+    }
+
+    if changed.is_some() && state == KeyState::Pressed && !replay_num_lock_to_windows() {
+        // If SendInput cannot replay the Num Lock press, pass this physical key sequence through
+        // until release. That keeps Windows' toggle state and LED synchronized instead of leaving
+        // NumFlow and the OS in different modes.
+        NUM_LOCK_REPLAY_FALLBACK.store(true, Ordering::Release);
+        return false;
+    }
+
+    true
+}
+
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         let state = match u32::try_from(wparam.0).ok() {
@@ -350,9 +423,21 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             let keyboard = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
 
             if keyboard.vkCode == u32::from(VK_NUMLOCK.0) {
-                if let Some(num_lock_on) = observe_num_lock(state) {
-                    let _ = dispatch_event(KeyboardHookEvent::NumLockChanged { num_lock_on }, true);
+                if is_numflow_num_lock_replay(keyboard) {
+                    return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
+
+                if keyboard.flags.0 & LLKHF_INJECTED.0 != 0 {
+                    // Respect Num Lock changes injected by other software and mirror them into
+                    // NumFlow state, but do not consume somebody else's injected input.
+                    let _ = dispatch_num_lock_change(state);
+                    return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+                }
+
+                if intercept_physical_num_lock(state) {
+                    return LRESULT(1);
+                }
+
                 return unsafe { CallNextHookEx(None, code, wparam, lparam) };
             }
 
@@ -379,7 +464,11 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
 #[cfg(test)]
 mod tests {
-    use super::num_lock_transition;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
+    };
+
+    use super::{NUMFLOW_NUM_LOCK_INJECTION_TAG, num_lock_replay_inputs, num_lock_transition};
     use crate::KeyState;
 
     #[test]
@@ -403,5 +492,25 @@ mod tests {
         assert!(on);
         assert!(down);
         assert_eq!(changed, Some(true));
+    }
+
+    #[test]
+    fn num_lock_replay_is_tagged_keyboard_input() {
+        let [down, up] = num_lock_replay_inputs();
+        assert_eq!(down.r#type, INPUT_KEYBOARD);
+        assert_eq!(up.r#type, INPUT_KEYBOARD);
+
+        let down = unsafe { down.Anonymous.ki };
+        let up = unsafe { up.Anonymous.ki };
+
+        assert_eq!(down.wVk, VK_NUMLOCK);
+        assert_eq!(up.wVk, VK_NUMLOCK);
+        assert_eq!(down.dwFlags, KEYEVENTF_EXTENDEDKEY);
+        assert_eq!(
+            up.dwFlags,
+            KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP
+        );
+        assert_eq!(down.dwExtraInfo, NUMFLOW_NUM_LOCK_INJECTION_TAG);
+        assert_eq!(up.dwExtraInfo, NUMFLOW_NUM_LOCK_INJECTION_TAG);
     }
 }
