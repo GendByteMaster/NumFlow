@@ -1,4 +1,6 @@
-use numflow_core::{Bindings, CoreEffect, InputAction, MotionConfig, MouseButton};
+#[cfg(not(windows))]
+use numflow_core::InputAction;
+use numflow_core::{Bindings, CoreEffect, MotionConfig, MouseButton};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -86,7 +88,7 @@ mod platform {
             let join = thread::Builder::new()
                 .name("numflow-runtime".to_owned())
                 .spawn(move || {
-                    worker_main(config, command_receiver, event_sender, ready_sender);
+                    worker_main(config, &command_receiver, &event_sender, &ready_sender);
                 })
                 .map_err(|error| RuntimeError::Start(error.to_string()))?;
 
@@ -224,7 +226,7 @@ mod platform {
             if let InputAction::Move(direction) = event.action {
                 match event.state {
                     KeyState::Pressed if self.controller.is_enabled() => {
-                        self.motion.press(direction)
+                        self.motion.press(direction);
                     }
                     KeyState::Released => self.motion.release(direction),
                     KeyState::Pressed => {}
@@ -284,9 +286,9 @@ mod platform {
 
     fn worker_main(
         config: RuntimeConfig,
-        command_receiver: Receiver<RuntimeCommand>,
-        event_sender: Sender<RuntimeEvent>,
-        ready_sender: mpsc::SyncSender<Result<(), String>>,
+        command_receiver: &Receiver<RuntimeCommand>,
+        event_sender: &Sender<RuntimeEvent>,
+        ready_sender: &mpsc::SyncSender<Result<(), String>>,
     ) {
         let (hook, keyboard_receiver) = match KeyboardHook::start() {
             Ok(runtime) => runtime,
@@ -327,7 +329,7 @@ mod platform {
                         if let Err(error) =
                             apply_command(command, &mut machine, &hook, &mut normalizer)
                         {
-                            fail_safe(&mut machine, &hook, &mut normalizer, &event_sender, &error);
+                            fail_safe(&mut machine, &hook, &mut normalizer, event_sender, &error);
                         }
                     }
                     Err(TryRecvError::Empty) => break,
@@ -345,10 +347,10 @@ mod platform {
             }
 
             while let Ok(event) = keyboard_receiver.try_recv() {
-                let Some(normalized) = normalizer.process(event, &machine.bindings) else {
+                let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {
                     continue;
                 };
-                match machine.handle_key_event(normalized) {
+                match machine.handle_key_event(normalized_event) {
                     Ok(effects) => {
                         if effects.iter().any(|effect| {
                             matches!(effect, CoreEffect::State(StateChange::Enabled(false)))
@@ -365,7 +367,7 @@ mod platform {
                             &mut machine,
                             &hook,
                             &mut normalizer,
-                            &event_sender,
+                            event_sender,
                             &error.to_string(),
                         );
                     }
@@ -380,14 +382,14 @@ mod platform {
                     &mut machine,
                     &hook,
                     &mut normalizer,
-                    &event_sender,
+                    event_sender,
                     &error.to_string(),
                 );
             }
 
             let spent = loop_started.elapsed();
             if spent < MOTION_TICK {
-                thread::sleep(MOTION_TICK - spent);
+                thread::sleep(MOTION_TICK.checked_sub(spent).unwrap());
             }
         }
     }
