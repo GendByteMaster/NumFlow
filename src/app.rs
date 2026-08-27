@@ -236,6 +236,38 @@ impl UiSettings {
         )
     }
 
+    fn reset_pointer_settings(&mut self) -> Vec<CoreEffect> {
+        let defaults = AppConfig::default();
+        let default_profile = defaults
+            .profiles
+            .get(&self.config.active_profile)
+            .unwrap_or_else(|| defaults.active_profile())
+            .clone();
+        let profile = self
+            .config
+            .profiles
+            .get_mut(&self.config.active_profile)
+            .expect("active profile must exist");
+
+        profile.speed = default_profile.speed;
+        profile.max_speed = default_profile.max_speed;
+        profile.acceleration = default_profile.acceleration;
+        profile.precision_multiplier = default_profile.precision_multiplier;
+        profile.boost_multiplier = default_profile.boost_multiplier;
+        profile.precision_enabled = default_profile.precision_enabled;
+        profile.selected_button = default_profile.selected_button;
+        self.motion = profile.motion_config();
+
+        let mut effects = self.controller.apply(InputAction::SelectButton(
+            default_profile.selected_button.into(),
+        ));
+        effects.extend(
+            self.controller
+                .apply(InputAction::SetPrecision(default_profile.precision_enabled)),
+        );
+        effects
+    }
+
     fn reset_defaults(&mut self) -> Vec<CoreEffect> {
         self.config = AppConfig::default();
         let profile = self.config.active_profile().clone();
@@ -277,6 +309,7 @@ fn ui_float(value: f64, fallback: f32) -> f32 {
 fn sync_binding_view(window: &AppWindow, settings: &UiSettings) {
     window.set_binding_key_index(settings.selected_binding_key_index());
     window.set_binding_action_index(settings.selected_binding_action_index());
+    window.set_numpad_zero_label(settings.binding_label(NumpadKeyConfig::Num0).into());
     window.set_numpad_one_label(settings.binding_label(NumpadKeyConfig::Num1).into());
     window.set_numpad_two_label(settings.binding_label(NumpadKeyConfig::Num2).into());
     window.set_numpad_three_label(settings.binding_label(NumpadKeyConfig::Num3).into());
@@ -286,6 +319,8 @@ fn sync_binding_view(window: &AppWindow, settings: &UiSettings) {
     window.set_numpad_seven_label(settings.binding_label(NumpadKeyConfig::Num7).into());
     window.set_numpad_eight_label(settings.binding_label(NumpadKeyConfig::Num8).into());
     window.set_numpad_nine_label(settings.binding_label(NumpadKeyConfig::Num9).into());
+    window.set_numpad_add_label(settings.binding_label(NumpadKeyConfig::Add).into());
+    window.set_numpad_decimal_label(settings.binding_label(NumpadKeyConfig::Decimal).into());
 }
 
 fn sync_window_from_settings(window: &AppWindow, settings: &UiSettings) {
@@ -575,6 +610,28 @@ fn connect_preferences(
             hud.borrow_mut().observe_effects(&effects);
             if let Some(window) = weak_window.upgrade() {
                 sync_window_from_settings(&window, &settings.borrow());
+            }
+            persist_configuration(&settings, &store);
+        });
+    }
+
+    {
+        let settings = Rc::clone(settings);
+        let hud = Rc::clone(hud);
+        let store = Rc::clone(store);
+        let runtime = Rc::clone(runtime);
+        let weak_window = window.as_weak();
+        let weak_tray = tray.as_weak();
+        window.on_reset_pointer_settings(move || {
+            let effects = settings.borrow_mut().reset_pointer_settings();
+            runtime_configure(&runtime, &settings);
+            hud.borrow_mut().observe_effects(&effects);
+
+            if let Some(window) = weak_window.upgrade() {
+                sync_window_from_settings(&window, &settings.borrow());
+            }
+            if let Some(tray) = weak_tray.upgrade() {
+                sync_tray_from_settings(&tray, &settings.borrow());
             }
             persist_configuration(&settings, &store);
         });
