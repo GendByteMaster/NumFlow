@@ -6,6 +6,7 @@ on:
       - dev/master
     paths:
       - .github/workflows/phase11-idle-runtime-once.yml
+      - scripts/_phase11_idle_runtime_patch.py
 
 permissions:
   contents: write
@@ -30,6 +31,22 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+
+      - name: Repair unique runtime import marker
+        shell: pwsh
+        run: |
+          $path = "scripts/_phase11_idle_runtime_patch.py"
+          $text = Get-Content $path -Raw
+          $oldMarker = '"    use numflow_core::{",'
+          $newMarker = '"    use numflow_core::{\n        ClickKind,",'
+          $oldReplacement = '"    use crossbeam_channel::{Receiver, Sender, TrySendError};\n    use numflow_core::{",'
+          $newReplacement = '"    use crossbeam_channel::{Receiver, Sender, TrySendError};\n    use numflow_core::{\n        ClickKind,",'
+          if (-not $text.Contains($oldMarker) -or -not $text.Contains($oldReplacement)) {
+            throw "Expected runtime import markers were not found in Phase 11 patch script"
+          }
+          $text = $text.Replace($oldMarker, $newMarker)
+          $text = $text.Replace($oldReplacement, $newReplacement)
+          Set-Content -Path $path -Value $text -NoNewline
 
       - name: Apply Phase 11 idle-runtime patch
         run: python scripts/_phase11_idle_runtime_patch.py
