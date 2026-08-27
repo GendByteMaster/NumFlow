@@ -337,6 +337,20 @@ fn runtime_apply(runtime: &SharedRuntime, action: InputAction) {
     }
 }
 
+fn runtime_set_enabled(runtime: &SharedRuntime, enabled: bool) -> bool {
+    match runtime.borrow().set_enabled(enabled) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                enabled,
+                "failed to send enabled mode to NumFlow background runtime"
+            );
+            false
+        }
+    }
+}
+
 fn runtime_configure(runtime: &SharedRuntime, settings: &SharedUiSettings) {
     let config = settings.borrow().runtime_config();
     if let Err(error) = runtime.borrow().configure(config) {
@@ -386,10 +400,21 @@ fn connect_pointer_controls(
         let settings = Rc::clone(settings);
         let hud = Rc::clone(hud);
         let runtime = Rc::clone(runtime);
+        let weak_window = window.as_weak();
         let weak_tray = tray.as_weak();
         window.on_enabled_toggled(move |enabled| {
+            if !runtime_set_enabled(&runtime, enabled) {
+                let previous = settings.borrow().enabled();
+                if let Some(window) = weak_window.upgrade() {
+                    window.set_numflow_enabled(previous);
+                }
+                if let Some(tray) = weak_tray.upgrade() {
+                    tray.set_numflow_enabled(previous);
+                }
+                return;
+            }
+
             let effects = settings.borrow_mut().set_enabled(enabled);
-            runtime_apply(&runtime, InputAction::SetEnabled(enabled));
             hud.borrow_mut().observe_effects(&effects);
             if let Some(tray) = weak_tray.upgrade() {
                 tray.set_numflow_enabled(enabled);
@@ -619,8 +644,18 @@ fn connect_tray(
         let weak_window = window.as_weak();
         let weak_tray = tray.as_weak();
         tray.on_enabled_toggled(move |enabled| {
+            if !runtime_set_enabled(&runtime, enabled) {
+                let previous = settings.borrow().enabled();
+                if let Some(window) = weak_window.upgrade() {
+                    window.set_numflow_enabled(previous);
+                }
+                if let Some(tray) = weak_tray.upgrade() {
+                    tray.set_numflow_enabled(previous);
+                }
+                return;
+            }
+
             let effects = settings.borrow_mut().set_enabled(enabled);
-            runtime_apply(&runtime, InputAction::SetEnabled(enabled));
             hud.borrow_mut().observe_effects(&effects);
             if let Some(window) = weak_window.upgrade() {
                 window.set_numflow_enabled(enabled);

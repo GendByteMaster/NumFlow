@@ -88,6 +88,7 @@ mod platform {
     #[derive(Debug)]
     enum RuntimeCommand {
         Apply(InputAction),
+        SetEnabled(bool),
         Configure(RuntimeConfig),
         SetMotionConfig(numflow_core::MotionConfig),
         SetBindings(numflow_core::Bindings),
@@ -169,6 +170,10 @@ mod platform {
 
         pub fn apply(&self, action: InputAction) -> Result<(), RuntimeError> {
             self.send(RuntimeCommand::Apply(action))
+        }
+
+        pub fn set_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::SetEnabled(enabled))
         }
 
         pub fn configure(&self, config: RuntimeConfig) -> Result<(), RuntimeError> {
@@ -685,6 +690,18 @@ mod platform {
         normalizer: &mut KeyboardEventNormalizer,
     ) -> Result<(), String> {
         match command {
+            RuntimeCommand::SetEnabled(enabled) => {
+                normalizer.reset();
+                let num_lock_on = !enabled;
+                if !hook.set_num_lock_on(num_lock_on) {
+                    return Err(format!(
+                        "failed to synchronize Windows Num Lock while setting NumFlow enabled={enabled}"
+                    ));
+                }
+                let _ =
+                    apply_num_lock_mode(machine, num_lock_on).map_err(|error| error.to_string())?;
+                hook.set_interception_enabled(machine.enabled());
+            }
             RuntimeCommand::Apply(action) => {
                 if matches!(
                     action,
@@ -1175,6 +1192,10 @@ impl BackgroundRuntime {
     }
 
     pub fn apply(&self, _action: InputAction) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn set_enabled(&self, _enabled: bool) -> Result<(), RuntimeError> {
         Ok(())
     }
 

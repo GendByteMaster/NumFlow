@@ -190,6 +190,40 @@ impl KeyboardHook {
         NUM_LOCK_ON.load(Ordering::Acquire)
     }
 
+    /// Synchronizes the tracked and Windows Num Lock state with an explicit runtime request.
+    ///
+    /// A tagged `SendInput` toggle is emitted only when the requested state differs from the
+    /// tracked physical state. `NumFlow` updates interception around that toggle so enabling pointer
+    /// control cannot leak an immediately-following `NumPad` key, while a failed injection restores
+    /// the previous interception state.
+    ///
+    /// Returns `false` when Windows did not accept the complete Num Lock replay sequence.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if compile-time Win32 input structure sizes cannot fit their API integer types.
+    #[must_use]
+    pub fn set_num_lock_on(&self, num_lock_on: bool) -> bool {
+        let current = self.num_lock_on();
+        if current == num_lock_on {
+            self.set_interception_enabled(!num_lock_on);
+            return true;
+        }
+
+        let previous_interception = self.interception_enabled();
+        INTERCEPTION_ENABLED.store(!num_lock_on, Ordering::Release);
+
+        if !replay_num_lock_to_windows() {
+            INTERCEPTION_ENABLED.store(previous_interception, Ordering::Release);
+            return false;
+        }
+
+        NUM_LOCK_ON.store(num_lock_on, Ordering::Release);
+        NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
+        self.set_interception_enabled(!num_lock_on);
+        true
+    }
+
     pub fn set_interception_enabled(&self, enabled: bool) {
         let should_intercept = enabled && !self.num_lock_on();
         INTERCEPTION_ENABLED.store(should_intercept, Ordering::Release);
