@@ -30,7 +30,11 @@ fn main() {
         }
     };
 
-    if let Err(error) = app::run() {
+    let background = std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == std::ffi::OsStr::new("--background"));
+
+    if let Err(error) = app::run(background) {
         tracing::error!(%error, "NumFlow terminated with an error");
         std::process::exit(1);
     }
