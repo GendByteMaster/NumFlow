@@ -534,9 +534,10 @@ mod platform {
             KeyboardHookEvent::NumLockChanged {
                 num_lock_on,
                 sync_system,
+                play_feedback,
             } => {
                 normalizer.reset();
-                if let Some(audio_feedback) = audio_feedback {
+                if play_feedback && let Some(audio_feedback) = audio_feedback {
                     audio_feedback.play(if num_lock_on {
                         AudioCue::NumFlowOff
                     } else {

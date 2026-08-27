@@ -46,6 +46,7 @@ pub enum KeyboardHookEvent {
     NumLockChanged {
         num_lock_on: bool,
         sync_system: bool,
+        play_feedback: bool,
     },
 }
 
@@ -360,18 +361,82 @@ fn observe_num_lock(state: KeyState) -> Option<bool> {
     changed
 }
 
-fn dispatch_num_lock_change(state: KeyState, sync_system: bool) -> Option<bool> {
+fn dispatch_num_lock_change(
+    state: KeyState,
+    sync_system: bool,
+    play_feedback: bool,
+) -> Option<bool> {
     let changed = observe_num_lock(state);
     if let Some(num_lock_on) = changed {
         let _ = dispatch_event(
             KeyboardHookEvent::NumLockChanged {
                 num_lock_on,
                 sync_system,
+                play_feedback,
             },
             true,
         );
     }
     changed
+}
+
+fn infer_num_lock_from_numpad(event: PhysicalKeyEvent) -> Option<bool> {
+    if event.extended {
+        return None;
+    }
+
+    match (event.scan_code, event.vk_code) {
+        // Num Lock ON: Windows reports the physical digit keys as VK_NUMPAD0..VK_NUMPAD9.
+        (0x52, 0x60)
+        | (0x4F, 0x61)
+        | (0x50, 0x62)
+        | (0x51, 0x63)
+        | (0x4B, 0x64)
+        | (0x4C, 0x65)
+        | (0x4D, 0x66)
+        | (0x47, 0x67)
+        | (0x48, 0x68)
+        | (0x49, 0x69)
+        | (0x53, 0x6E) => Some(true),
+
+        // Num Lock OFF: the same physical scan codes are reported as navigation keys.
+        (0x52, 0x2D) // Insert
+        | (0x4F, 0x23) // End
+        | (0x50, 0x28) // Down
+        | (0x51, 0x22) // Page Down
+        | (0x4B, 0x25) // Left
+        | (0x4C, 0x0C) // Clear
+        | (0x4D, 0x27) // Right
+        | (0x47, 0x24) // Home
+        | (0x48, 0x26) // Up
+        | (0x49, 0x21) // Page Up
+        | (0x53, 0x2E) => Some(false), // Delete
+        _ => None,
+    }
+}
+
+fn reconcile_num_lock_from_numpad(event: PhysicalKeyEvent) {
+    let Some(observed_num_lock_on) = infer_num_lock_from_numpad(event) else {
+        return;
+    };
+
+    let previous = NUM_LOCK_ON.swap(observed_num_lock_on, Ordering::AcqRel);
+    if previous == observed_num_lock_on {
+        return;
+    }
+
+    // GetKeyState is thread-message-queue based and can be stale on a newly-created background
+    // hook thread. A physical NumPad event carries the actual Windows interpretation, so use it to
+    // repair startup state before deciding whether this same event should be intercepted.
+    INTERCEPTION_ENABLED.store(!observed_num_lock_on, Ordering::Release);
+    let _ = dispatch_event(
+        KeyboardHookEvent::NumLockChanged {
+            num_lock_on: observed_num_lock_on,
+            sync_system: false,
+            play_feedback: false,
+        },
+        true,
+    );
 }
 
 fn num_lock_replay_inputs() -> [INPUT; 2] {
@@ -411,7 +476,7 @@ fn is_numflow_num_lock_replay(keyboard: KBDLLHOOKSTRUCT) -> bool {
 fn intercept_physical_num_lock(state: KeyState) -> bool {
     // Always consume the physical Num Lock sequence. The runtime performs the tagged Windows
     // replay after this low-level hook callback returns, avoiding re-entrant SendInput here.
-    let _ = dispatch_num_lock_change(state, true);
+    let _ = dispatch_num_lock_change(state, true, true);
     true
 }
 
@@ -434,7 +499,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 if keyboard.flags.0 & LLKHF_INJECTED.0 != 0 {
                     // Respect Num Lock changes injected by other software and mirror them into
                     // NumFlow state, but do not consume somebody else's injected input.
-                    let _ = dispatch_num_lock_change(state, false);
+                    let _ = dispatch_num_lock_change(state, false, true);
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
 
@@ -445,16 +510,18 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 return unsafe { CallNextHookEx(None, code, wparam, lparam) };
             }
 
-            if INTERCEPTION_ENABLED.load(Ordering::Acquire) && !NUM_LOCK_ON.load(Ordering::Acquire)
-            {
-                let event = PhysicalKeyEvent::new(
-                    keyboard.vkCode,
-                    keyboard.scanCode,
-                    keyboard.flags.0 & LLKHF_EXTENDED.0 != 0,
-                    state,
-                );
+            let event = PhysicalKeyEvent::new(
+                keyboard.vkCode,
+                keyboard.scanCode,
+                keyboard.flags.0 & LLKHF_EXTENDED.0 != 0,
+                state,
+            );
 
-                if map_numpad_key(event).is_some()
+            if map_numpad_key(event).is_some() {
+                reconcile_num_lock_from_numpad(event);
+
+                if INTERCEPTION_ENABLED.load(Ordering::Acquire)
+                    && !NUM_LOCK_ON.load(Ordering::Acquire)
                     && dispatch_event(KeyboardHookEvent::Key(event), false)
                 {
                     return LRESULT(1);
@@ -473,10 +540,10 @@ mod tests {
     };
 
     use super::{
-        NUM_LOCK_SCAN_CODE, NUMFLOW_NUM_LOCK_INJECTION_TAG, num_lock_replay_inputs,
-        num_lock_transition,
+        NUM_LOCK_SCAN_CODE, NUMFLOW_NUM_LOCK_INJECTION_TAG, infer_num_lock_from_numpad,
+        num_lock_replay_inputs, num_lock_transition,
     };
-    use crate::KeyState;
+    use crate::{KeyState, PhysicalKeyEvent};
 
     #[test]
     fn num_lock_toggles_once_per_physical_press() {
@@ -499,6 +566,54 @@ mod tests {
         assert!(on);
         assert!(down);
         assert_eq!(changed, Some(true));
+    }
+
+    #[test]
+    fn infers_num_lock_on_from_physical_numpad_digit_semantics() {
+        for (scan_code, vk_code) in [
+            (0x52, 0x60),
+            (0x4F, 0x61),
+            (0x50, 0x62),
+            (0x51, 0x63),
+            (0x4B, 0x64),
+            (0x4C, 0x65),
+            (0x4D, 0x66),
+            (0x47, 0x67),
+            (0x48, 0x68),
+            (0x49, 0x69),
+            (0x53, 0x6E),
+        ] {
+            let event = PhysicalKeyEvent::new(vk_code, scan_code, false, KeyState::Pressed);
+            assert_eq!(infer_num_lock_from_numpad(event), Some(true));
+        }
+    }
+
+    #[test]
+    fn infers_num_lock_off_from_physical_numpad_navigation_semantics() {
+        for (scan_code, vk_code) in [
+            (0x52, 0x2D),
+            (0x4F, 0x23),
+            (0x50, 0x28),
+            (0x51, 0x22),
+            (0x4B, 0x25),
+            (0x4C, 0x0C),
+            (0x4D, 0x27),
+            (0x47, 0x24),
+            (0x48, 0x26),
+            (0x49, 0x21),
+            (0x53, 0x2E),
+        ] {
+            let event = PhysicalKeyEvent::new(vk_code, scan_code, false, KeyState::Pressed);
+            assert_eq!(infer_num_lock_from_numpad(event), Some(false));
+        }
+    }
+
+    #[test]
+    fn does_not_infer_num_lock_from_operator_or_extended_keys() {
+        let add = PhysicalKeyEvent::new(0x6B, 0x4E, false, KeyState::Pressed);
+        let navigation_cluster = PhysicalKeyEvent::new(0x28, 0x50, true, KeyState::Pressed);
+        assert_eq!(infer_num_lock_from_numpad(add), None);
+        assert_eq!(infer_num_lock_from_numpad(navigation_cluster), None);
     }
 
     #[test]
