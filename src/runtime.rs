@@ -223,7 +223,9 @@ mod platform {
         ) -> Result<Vec<CoreEffect>, B::Error> {
             if let InputAction::Move(direction) = event.action {
                 match event.state {
-                    KeyState::Pressed if self.controller.is_enabled() => self.motion.press(direction),
+                    KeyState::Pressed if self.controller.is_enabled() => {
+                        self.motion.press(direction)
+                    }
                     KeyState::Released => self.motion.release(direction),
                     KeyState::Pressed => {}
                 }
@@ -322,12 +324,9 @@ mod platform {
                         break;
                     }
                     Ok(command) => {
-                        if let Err(error) = apply_command(
-                            command,
-                            &mut machine,
-                            &hook,
-                            &mut normalizer,
-                        ) {
+                        if let Err(error) =
+                            apply_command(command, &mut machine, &hook, &mut normalizer)
+                        {
                             fail_safe(&mut machine, &hook, &mut normalizer, &event_sender, &error);
                         }
                     }
@@ -401,7 +400,9 @@ mod platform {
     ) -> Result<(), String> {
         match command {
             RuntimeCommand::Apply(action) => {
-                machine.apply_action(action).map_err(|error| error.to_string())?;
+                machine
+                    .apply_action(action)
+                    .map_err(|error| error.to_string())?;
                 if !machine.enabled() {
                     machine.motion.stop();
                     normalizer.reset();
@@ -409,7 +410,9 @@ mod platform {
                 hook.set_interception_enabled(machine.enabled());
             }
             RuntimeCommand::Configure(config) => {
-                machine.configure(config).map_err(|error| error.to_string())?;
+                machine
+                    .configure(config)
+                    .map_err(|error| error.to_string())?;
                 normalizer.reset();
                 hook.set_interception_enabled(machine.enabled());
             }

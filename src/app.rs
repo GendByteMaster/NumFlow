@@ -827,7 +827,8 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
             .map_err(|error| AppError::Ui(error.to_string()))?;
     }
 
-    let event_loop_result = slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));
+    let event_loop_result =
+        slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));
     if let Err(error) = runtime.borrow_mut().shutdown() {
         tracing::error!(%error, "background runtime failed during final shutdown");
     }
