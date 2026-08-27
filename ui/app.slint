@@ -1,7 +1,7 @@
-import { Button, ComboBox, Slider } from "std-widgets.slint";
+import { Button, ComboBox } from "std-widgets.slint";
 import {
-    DisclosureRow, GlassToggle, MappingRow, MenuAction, NumFlowTheme, SegmentedControl,
-    Separator, UtilityButton
+    DisclosureRow, GlassSlider, GlassToggle, MappingRow, MenuAction, NumFlowTheme,
+    SegmentedControl, Separator, UtilityButton
 } from "design-system.slint";
 export * from "hud.slint";
 
@@ -555,9 +555,9 @@ export component AppWindow inherits Window {
                         max-width: 86px;
                     }
 
-                    Slider {
+                    GlassSlider {
                         horizontal-stretch: 1;
-                        accessible-label: "Pointer speed";
+                        a11y-label: "Pointer speed";
                         minimum: 40;
                         maximum: 800;
                         step: 10;
@@ -600,9 +600,9 @@ export component AppWindow inherits Window {
                         max-width: 86px;
                     }
 
-                    Slider {
+                    GlassSlider {
                         horizontal-stretch: 1;
-                        accessible-label: "Pointer acceleration";
+                        a11y-label: "Pointer acceleration";
                         minimum: 0;
                         maximum: 3000;
                         step: 50;
@@ -693,9 +693,9 @@ export component AppWindow inherits Window {
                                 Text { text: "Semantic feedback volume"; color: NumFlowTheme.secondary-label; font-size: 10px; }
                             }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
-                            Slider {
+                            GlassSlider {
                                 enabled: root.advanced-open && root.sounds-enabled;
-                                accessible-label: "Sound volume";
+                                a11y-label: "Sound volume";
                                 min-width: 112px;
                                 max-width: 112px;
                                 minimum: 0;
@@ -786,7 +786,9 @@ export component AppWindow inherits Window {
                     UtilityButton {
 
                         reduced-motion: root.reduced-motion;
-                        text: "⋯";
+                        text: "";
+                        more-glyph: true;
+                        a11y-label: "More options";
                         min-width: 34px;
                         max-width: 34px;
                         clicked => { root.ui-sound-requested("open"); more-menu.show(); }
