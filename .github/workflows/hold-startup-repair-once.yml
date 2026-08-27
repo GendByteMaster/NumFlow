@@ -1,0 +1,59 @@
+name: One-shot hold and keyboard startup repair
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - scripts/_hold_startup_repair.py
+      - .github/workflows/hold-startup-repair-once.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply hold and startup repair
+        shell: pwsh
+        run: python scripts/_hold_startup_repair.py
+
+      - name: Remove one-shot files
+        shell: pwsh
+        run: git rm -f scripts/_hold_startup_repair.py .github/workflows/hold-startup-repair-once.yml
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Commit validated repair
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if (git diff --cached --quiet) { exit 0 }
+          git commit -m "fix(input): stabilize hold and keyboard startup"
+          git push origin HEAD:dev/master
