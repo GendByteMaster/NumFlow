@@ -70,7 +70,7 @@ mod platform {
     use crossbeam_channel::{Receiver, Sender, TrySendError};
     use numflow_core::{
         ClickKind, ControllerState, CoreEffect, InputAction, MotionEngine, MotionModifiers,
-        PointerBackend, PointerEffect,
+        MouseButton, NumpadKey, PointerBackend, PointerEffect,
     };
     use numflow_windows::{
         AudioCue, AudioFeedbackService, KeyState, KeyboardEventNormalizer, KeyboardHook,
@@ -82,6 +82,8 @@ mod platform {
     const MOTION_TICK: Duration = Duration::from_millis(8);
     const COMMAND_QUEUE_CAPACITY: usize = 64;
     const EVENT_QUEUE_CAPACITY: usize = 64;
+    const KEYBOARD_HOOK_START_ATTEMPTS: usize = 3;
+    const KEYBOARD_HOOK_RETRY_DELAY: Duration = Duration::from_millis(100);
 
     #[derive(Debug)]
     enum RuntimeCommand {
@@ -307,6 +309,22 @@ mod platform {
             }
 
             if event.state == KeyState::Pressed {
+                // NumPad 0 is the dedicated left-button drag latch. It holds the physical left
+                // button without changing the user's selected click button.
+                if event.key == NumpadKey::Num0 && event.action == InputAction::Hold {
+                    let effects = self.controller.hold_button(MouseButton::Left);
+                    self.execute_effects(&effects)?;
+                    return Ok(effects);
+                }
+
+                // While a drag latch is active, NumPad 5 and + are explicit release controls.
+                // When nothing is held they retain their normal Click / DoubleClick behavior.
+                if matches!(event.key, NumpadKey::Num5 | NumpadKey::Add)
+                    && self.controller.held_button().is_some()
+                {
+                    return self.apply_action(InputAction::Release);
+                }
+
                 if matches!(
                     event.action,
                     InputAction::ToggleEnabled | InputAction::SetEnabled(_)
@@ -362,16 +380,45 @@ mod platform {
         }
     }
 
+    fn start_keyboard_hook_with_retry()
+    -> Result<(KeyboardHook, Receiver<KeyboardHookEvent>), String> {
+        let mut last_error = None;
+
+        for attempt in 1..=KEYBOARD_HOOK_START_ATTEMPTS {
+            match KeyboardHook::start() {
+                Ok(runtime) => {
+                    tracing::info!(attempt, "NumFlow keyboard hook registered and ready");
+                    return Ok(runtime);
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    tracing::warn!(
+                        attempt,
+                        attempts = KEYBOARD_HOOK_START_ATTEMPTS,
+                        %error,
+                        "failed to initialize NumFlow keyboard hook"
+                    );
+                    last_error = Some(error);
+                    if attempt < KEYBOARD_HOOK_START_ATTEMPTS {
+                        thread::sleep(KEYBOARD_HOOK_RETRY_DELAY);
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| "keyboard hook initialization failed".to_owned()))
+    }
+
     fn worker_main(
         config: RuntimeConfig,
         command_receiver: &Receiver<RuntimeCommand>,
         event_sink: &RuntimeEventSink,
         ready_sender: &mpsc::SyncSender<Result<(), String>>,
     ) {
-        let (hook, keyboard_receiver) = match KeyboardHook::start() {
+        let (hook, keyboard_receiver) = match start_keyboard_hook_with_retry() {
             Ok(runtime) => runtime,
             Err(error) => {
-                let _ = ready_sender.send(Err(error.to_string()));
+                let _ = ready_sender.send(Err(error));
                 return;
             }
         };
@@ -685,6 +732,8 @@ mod platform {
             moves: Vec<(i32, i32)>,
             held: Vec<MouseButton>,
             releases: usize,
+            clicks: usize,
+            double_clicks: usize,
         }
 
         impl PointerBackend for MockPointer {
@@ -709,10 +758,12 @@ mod platform {
             }
 
             fn click(&mut self, _button: MouseButton) -> Result<(), Self::Error> {
+                self.clicks += 1;
                 Ok(())
             }
 
             fn double_click(&mut self, _button: MouseButton) -> Result<(), Self::Error> {
+                self.double_clicks += 1;
                 Ok(())
             }
 
@@ -846,6 +897,95 @@ mod platform {
 
             assert!(effects.is_empty());
             assert!(machine.enabled());
+        }
+
+        fn pressed(key: NumpadKey, action: InputAction) -> NormalizedKeyEvent {
+            NormalizedKeyEvent {
+                key,
+                action,
+                state: KeyState::Pressed,
+                repeated: false,
+            }
+        }
+
+        #[test]
+        fn numpad_zero_holds_left_without_duplicate_mouse_down() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+            machine
+                .apply_action(InputAction::SelectButton(MouseButton::Right))
+                .expect("mock is infallible");
+
+            let first = machine
+                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .expect("mock is infallible");
+            let repeated = machine
+                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .expect("mock is infallible");
+
+            assert!(!first.is_empty());
+            assert!(repeated.is_empty());
+            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
+            assert_eq!(machine.controller.held_button(), Some(MouseButton::Left));
+            assert_eq!(machine.controller.selected_button(), MouseButton::Right);
+        }
+
+        #[test]
+        fn numpad_five_releases_active_hold_and_resets_state() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+            machine
+                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .expect("mock is infallible");
+
+            machine
+                .handle_key_event(pressed(NumpadKey::Num5, InputAction::Click))
+                .expect("mock is infallible");
+
+            assert!(machine.pointer.held.is_empty());
+            assert_eq!(machine.controller.held_button(), None);
+            assert_eq!(machine.pointer.releases, 1);
+            assert_eq!(machine.pointer.clicks, 0);
+
+            machine
+                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .expect("mock is infallible");
+            assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
+        }
+
+        #[test]
+        fn numpad_add_releases_active_hold_without_double_clicking() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+            machine
+                .handle_key_event(pressed(NumpadKey::Num0, InputAction::Hold))
+                .expect("mock is infallible");
+
+            machine
+                .handle_key_event(pressed(NumpadKey::Add, InputAction::DoubleClick))
+                .expect("mock is infallible");
+
+            assert!(machine.pointer.held.is_empty());
+            assert_eq!(machine.controller.held_button(), None);
+            assert_eq!(machine.pointer.releases, 1);
+            assert_eq!(machine.pointer.double_clicks, 0);
+        }
+
+        #[test]
+        fn five_and_add_keep_normal_click_behavior_without_hold() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
+
+            machine
+                .handle_key_event(pressed(NumpadKey::Num5, InputAction::Click))
+                .expect("mock is infallible");
+            machine
+                .handle_key_event(pressed(NumpadKey::Add, InputAction::DoubleClick))
+                .expect("mock is infallible");
+
+            assert_eq!(machine.pointer.clicks, 1);
+            assert_eq!(machine.pointer.double_clicks, 1);
+            assert_eq!(machine.controller.held_button(), None);
         }
 
         #[test]

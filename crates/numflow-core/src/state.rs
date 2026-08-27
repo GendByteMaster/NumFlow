@@ -62,21 +62,13 @@ impl ControllerState {
                     kind: ClickKind::Double,
                 })]
             }
-            InputAction::Hold if self.enabled && self.held_button.is_none() => {
-                self.held_button = Some(self.selected_button);
-                vec![CoreEffect::Pointer(PointerEffect::ButtonDown(
-                    self.selected_button,
-                ))]
-            }
+            InputAction::Hold => self.hold_button(self.selected_button),
             InputAction::Release => self.release_held_button(),
             InputAction::SelectButton(button) => self.select_button(button),
             InputAction::ToggleEnabled => self.set_enabled(!self.enabled),
             InputAction::SetEnabled(enabled) => self.set_enabled(enabled),
             InputAction::SetPrecision(precision) => self.set_precision(precision),
-            InputAction::Move(_)
-            | InputAction::Click
-            | InputAction::DoubleClick
-            | InputAction::Hold => Vec::new(),
+            InputAction::Move(_) | InputAction::Click | InputAction::DoubleClick => Vec::new(),
         }
     }
 
@@ -98,6 +90,19 @@ impl ControllerState {
 
     const fn can_click(self) -> bool {
         self.enabled && self.held_button.is_none()
+    }
+
+    /// Holds a specific physical mouse button without changing the selected click button.
+    ///
+    /// Repeated calls while any button is already held are idempotent and never emit a duplicate
+    /// `ButtonDown`.
+    pub fn hold_button(&mut self, button: MouseButton) -> Vec<CoreEffect> {
+        if !self.enabled || self.held_button.is_some() {
+            return Vec::new();
+        }
+
+        self.held_button = Some(button);
+        vec![CoreEffect::Pointer(PointerEffect::ButtonDown(button))]
     }
 
     fn release_held_button(&mut self) -> Vec<CoreEffect> {
@@ -230,6 +235,30 @@ mod tests {
 
         assert!(!state.apply(InputAction::Hold).is_empty());
         assert!(state.apply(InputAction::Hold).is_empty());
+    }
+
+    #[test]
+    fn explicit_left_hold_does_not_change_selected_button_and_is_idempotent() {
+        let mut state = ControllerState::default();
+        state.apply(InputAction::SetEnabled(true));
+        state.apply(InputAction::SelectButton(MouseButton::Right));
+
+        assert_eq!(
+            state.hold_button(MouseButton::Left),
+            vec![CoreEffect::Pointer(PointerEffect::ButtonDown(
+                MouseButton::Left
+            ))]
+        );
+        assert_eq!(state.selected_button(), MouseButton::Right);
+        assert_eq!(state.held_button(), Some(MouseButton::Left));
+        assert!(state.hold_button(MouseButton::Left).is_empty());
+        assert_eq!(
+            state.apply(InputAction::Release),
+            vec![CoreEffect::Pointer(PointerEffect::ButtonUp(
+                MouseButton::Left
+            ))]
+        );
+        assert_eq!(state.held_button(), None);
     }
 
     #[test]
