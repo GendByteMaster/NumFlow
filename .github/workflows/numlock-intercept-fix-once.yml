@@ -1,0 +1,61 @@
+name: One-shot Num Lock interception repair
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - scripts/_numlock_intercept_fix.py
+      - .github/workflows/numlock-intercept-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply Num Lock repair
+        shell: pwsh
+        run: python scripts/_numlock_intercept_fix.py
+
+      - name: Format
+        shell: pwsh
+        run: cargo fmt --all
+
+      - name: Formatting check
+        shell: pwsh
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        shell: pwsh
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        shell: pwsh
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        shell: pwsh
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Commit validated repair
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f scripts/_numlock_intercept_fix.py .github/workflows/numlock-intercept-fix-once.yml
+          git add crates/numflow-windows/src/hook.rs src/runtime.rs
+          git commit -m "fix(input): make Num Lock interception reliable"
+          git push origin HEAD:dev/master
