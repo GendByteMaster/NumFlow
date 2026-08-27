@@ -1,0 +1,45 @@
+name: One-shot rustfmt
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/rustfmt-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout dev/master
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt
+
+      - name: Apply rustfmt
+        run: cargo fmt --all
+
+      - name: Commit formatting and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/rustfmt-once.yml
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No formatting changes were needed"
+            exit 0
+          fi
+          git commit -m "style(runtime): apply rustfmt"
+          git push origin HEAD:dev/master
