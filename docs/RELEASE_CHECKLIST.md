@@ -20,6 +20,13 @@ The Phase 11 idle-runtime change delivered to `dev/master` passed the Windows qu
 - [x] runtime command queue bounded
 - [x] keyboard-hook event queue bounded and hook delivery non-blocking
 - [x] startup interception race fixed so interception is not enabled before runtime readiness
+- [x] Num Lock mode switching implemented in the global hook
+- [x] physical Num Lock interception implemented
+- [x] tagged Num Lock `SendInput` replay implemented to preserve Windows toggle/LED state
+- [x] Num Lock autorepeat is suppressed by edge-state tracking
+- [x] replay failure has physical-key passthrough fallback until key-up
+- [x] separate asynchronous audio cues implemented for NumFlow On/Off
+- [x] Num Lock interception change passed formatting, Clippy, tests, and release build on Windows CI
 
 These items are automated evidence only. They do not replace the manual matrix below.
 
@@ -68,9 +75,26 @@ For every scaling level verify:
 
 ### NumPad and keyboard behaviour
 
-- [ ] Num Lock On.
-- [ ] Num Lock Off.
-- [ ] key-down/key-up remains correct during rapid input.
+- [ ] Start NumFlow while Windows Num Lock is On and confirm NumFlow starts Off for pointer interception.
+- [ ] Start NumFlow while Windows Num Lock is Off and confirm NumFlow starts On for pointer interception.
+- [ ] Physical Num Lock press is consumed by NumFlow rather than passed through directly.
+- [ ] Num Lock On → NumPad `0–9` enter ordinary digits in a text editor.
+- [ ] Num Lock Off → NumPad controls the system cursor.
+- [ ] Windows Num Lock LED/toggle state follows every successful NumFlow mode switch.
+- [ ] NumFlow does not double-toggle when its own tagged Num Lock replay re-enters `WH_KEYBOARD_LL`.
+- [ ] Holding Num Lock does not toggle repeatedly from key autorepeat.
+- [ ] Rapid repeated Num Lock presses remain synchronized with Windows state/LED.
+- [ ] Num Lock switching works with the NumFlow settings window unfocused/minimized.
+- [ ] Num Lock switching works while another standard desktop application is foreground.
+- [ ] Separate short audio cue is heard for NumFlow On.
+- [ ] Separate short audio cue is heard for NumFlow Off.
+- [ ] Mode audio does not introduce noticeable keyboard/input delay.
+- [ ] Audio worker remains stable during rapid Num Lock toggling.
+- [ ] Externally injected Num Lock input is not consumed and NumFlow mirrors the resulting mode change.
+- [ ] Replay failure fallback does not leave Num Lock logically stuck or desynchronized.
+- [ ] Switching Num Lock On during movement stops NumFlow pointer interception immediately.
+- [ ] Switching Num Lock On during hold/drag safely releases the held mouse button.
+- [ ] key-down/key-up remains correct during rapid NumPad input.
 - [ ] diagonal movement remains correct.
 - [ ] repeated click/select input does not desynchronize state.
 - [ ] emergency disable remains reachable.
@@ -102,13 +126,13 @@ For every scaling level verify:
 
 - [ ] Main window close/minimize behaviour.
 - [ ] Tray open/settings action.
-- [ ] Tray enable/disable state synchronization.
+- [ ] Tray mode/status synchronization with Num Lock.
 - [ ] Start minimized.
 - [ ] Start with Windows registration.
 - [ ] Single-instance behaviour.
-- [ ] Sleep → resume.
+- [ ] Sleep → resume with Num Lock state rechecked/synchronized.
 - [ ] Multi-monitor movement/use.
-- [ ] Repeated enable/disable cycles.
+- [ ] Repeated Num Lock On/Off cycles.
 - [ ] Clean application shutdown.
 
 ## Accessibility pass
@@ -117,7 +141,8 @@ For every scaling level verify:
 - [ ] Visible focus on interactive controls.
 - [ ] Status is not communicated by color alone.
 - [ ] Selected mouse button is available as text/icon state.
-- [ ] On/Off state is available as text/icon state.
+- [ ] NumFlow On/Off state is available as text/icon state.
+- [ ] Num Lock mode meaning is understandable without relying only on the hardware LED.
 - [ ] Precision state is available as text/icon state.
 - [ ] Accessible labels exist where Slint/platform support allows.
 - [ ] Sufficient contrast under normal Windows themes.

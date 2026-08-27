@@ -78,13 +78,15 @@ It must not depend on Win32 or Slint APIs.
 `numflow-windows` owns platform integration:
 
 - `WH_KEYBOARD_LL` global keyboard hook;
+- physical Num Lock interception and tagged replay;
 - NumPad key mapping and normalization;
+- asynchronous mode-switch audio feedback;
 - `SendInput` pointer injection;
 - HUD placement helpers;
 - single-instance protection;
 - per-user Windows startup registration.
 
-The hook callback must stay short and non-blocking.
+The hook callback must stay short and non-blocking. Blocking work such as audio playback must stay outside the hook thread.
 
 ## Running locally
 
@@ -143,6 +145,8 @@ Configuration rules:
 
 Do not introduce ad-hoc settings outside the typed configuration model.
 
+The Windows audio service already supports being enabled/disabled internally. A future Settings toggle for mode-switch sounds should connect to that service and be added to the typed config instead of introducing a separate global flag.
+
 ## Runtime model
 
 The Windows application has three important event domains:
@@ -158,6 +162,36 @@ core state / pointer effects
         ↓
 Windows pointer backend + UI/HUD state
 ```
+
+### Num Lock mode ownership
+
+Num Lock is the authoritative global mode switch while NumFlow is running:
+
+```text
+physical Num Lock press
+        ↓
+WH_KEYBOARD_LL consumes the physical event
+        ↓
+NumFlow toggles runtime mode immediately
+        ↓
+NumLockChanged event → runtime/UI/audio
+        ↓
+tagged SendInput replay updates Windows Num Lock state + LED
+```
+
+Required behaviour:
+
+- Num Lock On → NumFlow pointer interception is disabled and NumPad keys are available for ordinary numeric input;
+- Num Lock Off → NumFlow pointer interception is enabled and the NumPad controls the system cursor;
+- the physical Num Lock key itself is consumed by NumFlow;
+- NumFlow's own injected replay is identified by a private `dwExtraInfo` tag and must pass through without re-entering the mode state machine;
+- injected Num Lock input from other software is not consumed, but NumFlow mirrors that state change;
+- if replay injection fails, NumFlow falls back to passing that physical Num Lock sequence through Windows until key-up so the OS toggle state is not left desynchronized;
+- key autorepeat must not toggle the mode more than once per physical press;
+- switching to Num Lock On must immediately stop interception and then let the runtime safely release any held mouse-button state;
+- the mode switch must work while the settings window is unfocused/minimized.
+
+Audio feedback is dispatched by the runtime to a separate bounded worker. The keyboard hook must never call blocking audio playback directly.
 
 ### Idle behaviour
 
@@ -191,8 +225,13 @@ NumFlow is an accessibility utility, so input safety takes priority over conveni
 The following invariants should remain true after every change:
 
 - disabled NumFlow does not intentionally move the pointer;
+- Num Lock On means NumFlow does not intercept ordinary NumPad number entry;
+- physical Num Lock interception never causes a recursive/double toggle;
+- Windows Num Lock state/LED remains synchronized with NumFlow mode in the normal replay path;
+- replay failure falls back to physical passthrough instead of silently swallowing the system toggle;
 - interception is not enabled before the runtime is ready;
-- hook callback work remains non-blocking;
+- hook callback work remains non-blocking apart from the minimal synchronous `SendInput` replay needed to preserve immediate Num Lock semantics;
+- audio playback never blocks the hook;
 - selected button and physically held button remain separate state;
 - release always targets the actually held button;
 - disable/shutdown/error handling releases a held button;
@@ -208,6 +247,7 @@ Keep these constraints:
 
 - one compact primary settings window;
 - clear On/Off status;
+- Num Lock mode must be understandable from status text/icon without relying only on the keyboard LED;
 - selected left/right/middle mouse mode must be visible with text/icon, not color alone;
 - visible keyboard focus;
 - controls should have accessible labels where Slint/platform support allows;
@@ -222,7 +262,9 @@ Manual accessibility validation is still required before v0.1 release.
 
 ### Num Lock
 
-The backend maps the physical NumPad path rather than relying only on logical key names. Automated normalization tests exist, but real Num Lock On/Off behaviour remains part of the manual release matrix.
+NumFlow owns the physical Num Lock key while running. The `WH_KEYBOARD_LL` hook consumes the physical key sequence and toggles NumFlow state on the first key-down edge only. A tagged synthetic Num Lock down/up pair is then sent through `SendInput` so Windows updates its normal Num Lock state and keyboard LED. NumFlow recognizes that replay and does not feed it back into the mode state machine.
+
+The backend still maps the physical NumPad path rather than relying only on logical key names. Automated transition/replay tests exist, but real Num Lock On/Off behaviour, LED synchronization, background operation, rapid toggling, external injected Num Lock events, and replay fallback remain part of the manual release matrix.
 
 ### UIPI / elevated applications
 
@@ -235,6 +277,8 @@ Start-with-Windows uses the current user's Run registry key. This is a per-user 
 ## Adding or changing bindings
 
 Bindings belong to the typed profile configuration and core binding resolver. UI code should translate editor choices into `InputAction` values; it should not hard-code pointer behaviour itself.
+
+Num Lock is reserved as the application mode switch and must not be exposed as a remappable profile binding in v0.1.
 
 Any new action should be considered across:
 
@@ -252,6 +296,7 @@ Prefer deterministic tests for core behaviour. Real pointer movement is not requ
 High-value automated areas include:
 
 - state transitions and illegal-state prevention;
+- Num Lock edge/repeat handling and tagged replay construction;
 - diagonal normalization;
 - acceleration and speed clamps;
 - frame-rate independence;

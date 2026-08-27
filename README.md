@@ -14,6 +14,8 @@ NumFlow v0.1 is in active development on `dev/master`.
 
 The main application path is already wired end to end: global NumPad capture, background pointer runtime, time-based motion, mouse-button selection/click/drag behaviour, Slint settings UI, HUD feedback, profiles, custom bindings, persistent configuration, tray lifecycle, startup registration, single-instance protection, and fail-safe pointer release.
 
+Num Lock is the global mode switch. NumFlow owns the physical Num Lock key while running: Num Lock On leaves the NumPad available for normal numeric input, while Num Lock Off activates NumFlow pointer control. The mode changes immediately in the background without restarting the application. A short asynchronous cue distinguishes NumFlow On from NumFlow Off.
+
 Recent reliability work also removed high-frequency idle polling from the background runtime. The worker now sleeps until input or a command arrives while motion is idle, and the Slint bridge uses event-driven wakeups instead of a fixed UI polling timer.
 
 > **Branch policy:** all v0.1 development happens only in `dev/master`. `master` must remain untouched until a release/merge is explicitly approved.
@@ -21,6 +23,10 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 ## Current capabilities
 
 - Global Windows NumPad input through `WH_KEYBOARD_LL`.
+- Physical Num Lock interception as the NumFlow mode switch.
+- Num Lock On → normal NumPad numeric input; Num Lock Off → NumFlow pointer control.
+- Tagged `SendInput` replay keeps Windows Num Lock state/LED synchronized without double-toggling NumFlow.
+- Separate non-blocking audio cues for NumFlow On and NumFlow Off.
 - Pointer movement and mouse-button injection through `SendInput`.
 - Smooth time-based movement with acceleration and diagonal normalization.
 - Configurable speed, acceleration, precision mode, and per-profile bindings.
@@ -43,6 +49,7 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 
 | Key | Action |
 | --- | --- |
+| `Num Lock` | Toggle NumFlow mode: On = digits, Off = pointer control |
 | `8` | Move up |
 | `2` | Move down |
 | `4` | Move left |
@@ -59,7 +66,7 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 | `*` | Select right mouse button |
 | `-` | Select middle mouse button |
 
-Bindings are configurable; the core logic does not depend on fixed virtual-key codes.
+Num Lock itself is reserved by NumFlow while the app is running. Other NumPad bindings are configurable; the core logic does not depend on fixed virtual-key codes.
 
 ## Running from source
 
@@ -108,6 +115,8 @@ The configuration is versioned (`schema_version = 1`) and currently contains:
 
 Writes are atomic. Invalid or unsupported configuration is recovered to safe defaults rather than being applied partially.
 
+The audio service already exposes an enable/disable control internally so a user-facing sound toggle can be added to Settings later without changing the Num Lock runtime architecture.
+
 ## Architecture
 
 ```text
@@ -124,7 +133,9 @@ NumFlow application
 │   └── pointer effects
 └── numflow-windows
     ├── WH_KEYBOARD_LL hook
+    ├── Num Lock interception/replay
     ├── key normalization
+    ├── asynchronous audio feedback
     ├── SendInput pointer backend
     ├── HUD placement helpers
     ├── single-instance guard
@@ -139,6 +150,11 @@ NumFlow treats input interception and drag state as safety-critical:
 
 - the keyboard hook callback does not perform blocking application work;
 - the physical keyboard queue is bounded and uses non-blocking delivery from the hook callback;
+- physical Num Lock presses are consumed by NumFlow;
+- NumFlow replays a tagged synthetic Num Lock press only to synchronize Windows toggle state/LED;
+- NumFlow ignores its own replay in the hook, preventing recursive/double mode changes;
+- if Num Lock replay fails, that physical key sequence falls back to Windows passthrough until key-up;
+- audio playback runs on a separate bounded worker and never blocks the keyboard hook;
 - the runtime command queue is bounded;
 - interception starts disabled until the application runtime is ready;
 - pointer motion ticks run only while motion is active;
@@ -157,7 +173,7 @@ GitHub Actions runs the Windows quality gate on `dev/master` using Rust `1.98`:
 3. `cargo test --locked --workspace --all-features`
 4. `cargo build --locked --workspace --release --all-features`
 
-The Phase 11 idle-runtime change passed the full gate with 78 tests (30 application, 30 core, 18 Windows) before delivery to `dev/master`.
+The Phase 11 idle-runtime change passed the full gate with 78 tests (30 application, 30 core, 18 Windows) before delivery to `dev/master`. The physical Num Lock interception change also passed the full Windows quality gate after implementation.
 
 ## v0.1 work still open
 
@@ -167,7 +183,7 @@ The remaining work is primarily validation and release readiness rather than maj
 - long-running resource/soak validation;
 - manual Windows 10/11 validation;
 - DPI scaling validation from 100% through 200%;
-- Num Lock on/off validation;
+- Num Lock interception/replay, LED synchronization, audio, and rapid-toggle validation on real hardware;
 - foreground/background application validation;
 - multi-monitor and sleep/resume validation;
 - final accessibility and keyboard-navigation pass;
@@ -178,7 +194,7 @@ See [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) and the [v0.1 roadm
 
 ## Windows input limitation
 
-NumFlow uses the Win32 `SendInput` API for simulated pointer movement and mouse-button events. Windows User Interface Privilege Isolation (UIPI) permits input injection only into applications running at an equal or lower integrity level. A normally launched NumFlow process therefore might not control an elevated/admin application.
+NumFlow uses the Win32 `SendInput` API for simulated pointer movement, mouse-button events, and the tagged Num Lock replay used to keep the Windows toggle state synchronized. Windows User Interface Privilege Isolation (UIPI) permits input injection only into applications running at an equal or lower integrity level. A normally launched NumFlow process therefore might not control an elevated/admin application.
 
 `SendInput` does not reliably report that UIPI was the specific reason an injection was blocked, so this limitation must not be treated as a random pointer-backend failure. NumFlow should run without elevation by default; elevation is not a general workaround and is outside the v0.1 default design.
 
