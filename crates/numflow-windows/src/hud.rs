@@ -58,12 +58,7 @@ pub fn recommended_hud_position(width: u32, height: u32, margin: u32) -> Option<
     ))
 }
 
-fn bottom_right_hud_position(
-    work: WorkArea,
-    width: i32,
-    height: i32,
-    margin: i32,
-) -> HudPosition {
+fn bottom_right_hud_position(work: WorkArea, width: i32, height: i32, margin: i32) -> HudPosition {
     let left = work.left.saturating_add(margin);
     let top = work.top.saturating_add(margin);
 
