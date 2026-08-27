@@ -70,10 +70,12 @@ export component HudWindow inherits Window {
             background: @linear-gradient(135deg, #ffffff14 0%, #ffffff05 44%, #0a84ff12 100%);
         }
 
+        // Keep the specular highlight away from the rounded corners. A full-width 1px
+        // line aliases visibly at fractional DPI scales and reads as a stray border.
         Rectangle {
-            x: 1px;
+            x: 18px;
             y: 1px;
-            width: parent.width - 2px;
+            width: parent.width - 36px;
             height: 1px;
             background: @linear-gradient(90deg, #ffffff08 0%, #ffffff42 48%, #64d2ff20 75%, #ffffff00 100%);
         }
@@ -116,14 +118,6 @@ export component HudWindow inherits Window {
                 animate transform-scale, transform-rotation {
                     duration: root.reduced-motion ? 0ms : 210ms;
                     easing: ease-out-back;
-                }
-
-                Rectangle {
-                    x: 1px;
-                    y: 1px;
-                    width: parent.width - 2px;
-                    height: 1px;
-                    background: #ffffff32;
                 }
 
                 Image {
