@@ -27,6 +27,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Fix Slint switch accessibility role
+        shell: pwsh
+        run: |
+          $path = 'scripts/apply_glass_material_polish.py'
+          $content = Get-Content $path -Raw
+          $content = $content.Replace('accessible-role: check-box;', 'accessible-role: switch;')
+          Set-Content $path $content -NoNewline
+
       - name: Apply glass material polish
         run: python scripts/apply_glass_material_polish.py
 
