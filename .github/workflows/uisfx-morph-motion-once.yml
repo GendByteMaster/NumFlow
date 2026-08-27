@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/uisfx-morph-motion-once.yml
       - scripts/apply_uisfx_morph_motion.py
+      - scripts/fix_uisfx_clippy.py
 
 permissions:
   contents: write
@@ -52,7 +53,9 @@ jobs:
           Remove-Item -Recurse -Force .tmp
 
       - name: Apply native audio and motion polish
-        run: python scripts/apply_uisfx_morph_motion.py
+        run: |
+          python scripts/apply_uisfx_morph_motion.py
+          python scripts/fix_uisfx_clippy.py
 
       - name: Format
         run: cargo fmt --all
@@ -99,6 +102,7 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item scripts/apply_uisfx_morph_motion.py
+          Remove-Item scripts/fix_uisfx_clippy.py
           Remove-Item .github/workflows/uisfx-morph-motion-once.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
