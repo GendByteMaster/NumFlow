@@ -1,0 +1,299 @@
+name: One-shot NumFlow accent isolation fix
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/ui-accent-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply themed slider and overflow fixes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+
+          design_path = Path("ui/design-system.slint")
+          design = design_path.read_text(encoding="utf-8")
+
+          old_import = 'import { Palette } from "std-widgets.slint";'
+          new_import = 'import { Palette, Slider } from "std-widgets.slint";'
+          if old_import not in design:
+              raise SystemExit("design-system std-widget import marker not found")
+          design = design.replace(old_import, new_import, 1)
+
+          slider_component = r'''
+          export component GlassSlider inherits Rectangle {
+              in-out property <float> value: 0;
+              in property <float> minimum: 0;
+              in property <float> maximum: 100;
+              in property <float> step: 1;
+              in property <bool> enabled: true;
+              in property <string> a11y-label: "Slider";
+              callback changed(float);
+
+              private property <float> fraction: root.maximum > root.minimum
+                  ? Math.max(0, Math.min(1, (root.value - root.minimum) / (root.maximum - root.minimum)))
+                  : 0;
+
+              min-height: 26px;
+              max-height: 26px;
+              background: transparent;
+              opacity: root.enabled ? 1 : 0.45;
+
+              track := Rectangle {
+                  x: 9px;
+                  y: (root.height - self.height) / 2;
+                  width: root.width - 18px;
+                  height: 4px;
+                  border-radius: 2px;
+                  background: NumFlowTheme.control;
+              }
+
+              Rectangle {
+                  x: track.x;
+                  y: track.y;
+                  width: track.width * root.fraction;
+                  height: track.height;
+                  border-radius: track.border-radius;
+                  background: @linear-gradient(90deg, #0a84ff 0%, #46a9ff 58%, #64d2ff 100%);
+              }
+
+              focus-ring := Rectangle {
+                  x: knob.x - 3px;
+                  y: knob.y - 3px;
+                  width: knob.width + 6px;
+                  height: knob.height + 6px;
+                  border-radius: self.width / 2;
+                  border-width: input.has-focus ? 2px : 0px;
+                  border-color: NumFlowTheme.focus-ring;
+                  background: transparent;
+                  opacity: input.has-focus ? 0.9 : 0;
+              }
+
+              knob := Rectangle {
+                  x: track.x + track.width * root.fraction - self.width / 2;
+                  y: (root.height - self.height) / 2;
+                  width: 18px;
+                  height: 18px;
+                  border-radius: 9px;
+                  background: #ffffff;
+                  border-width: 2px;
+                  border-color: #64d2ff80;
+                  drop-shadow-blur: 5px;
+                  drop-shadow-color: #00000045;
+                  drop-shadow-offset-y: 1px;
+              }
+
+              input := Slider {
+                  width: parent.width;
+                  height: parent.height;
+                  opacity: 0;
+                  enabled: root.enabled;
+                  accessible-label: root.a11y-label;
+                  minimum: root.minimum;
+                  maximum: root.maximum;
+                  step: root.step;
+                  value <=> root.value;
+                  changed(value) => { root.changed(value); }
+              }
+          }
+
+          '''
+
+          utility_marker = "export component UtilityButton inherits Rectangle {"
+          if utility_marker not in design:
+              raise SystemExit("UtilityButton marker not found")
+          design = design.replace(utility_marker, slider_component + utility_marker, 1)
+
+          old_props = '''export component UtilityButton inherits Rectangle {
+              in property <string> text;
+              in property <bool> destructive: false;
+              in property <bool> enabled: true;
+              in property <bool> reduced-motion: false;
+              callback clicked();'''
+          new_props = '''export component UtilityButton inherits Rectangle {
+              in property <string> text;
+              in property <bool> destructive: false;
+              in property <bool> enabled: true;
+              in property <bool> reduced-motion: false;
+              in property <bool> more-glyph: false;
+              in property <string> a11y-label: "";
+              callback clicked();'''
+          if old_props not in design:
+              raise SystemExit("UtilityButton property block not found")
+          design = design.replace(old_props, new_props, 1)
+
+          old_text = '''    Text {
+                  text: root.text;
+                  color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+                  font-size: 12px;
+                  font-weight: 500;
+                  horizontal-alignment: center;
+                  vertical-alignment: center;
+              }
+
+              keyboard-focus := FocusScope {'''
+          new_text = '''    Text {
+                  text: root.more-glyph ? "" : root.text;
+                  color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+                  font-size: 12px;
+                  font-weight: 500;
+                  horizontal-alignment: center;
+                  vertical-alignment: center;
+              }
+
+              Rectangle {
+                  x: root.width / 2 - 7px;
+                  y: root.height / 2 - 1px;
+                  width: 3px;
+                  height: 3px;
+                  border-radius: 2px;
+                  background: NumFlowTheme.label;
+                  opacity: root.more-glyph ? 0.88 : 0;
+              }
+              Rectangle {
+                  x: root.width / 2 - 1px;
+                  y: root.height / 2 - 1px;
+                  width: 3px;
+                  height: 3px;
+                  border-radius: 2px;
+                  background: NumFlowTheme.label;
+                  opacity: root.more-glyph ? 0.88 : 0;
+              }
+              Rectangle {
+                  x: root.width / 2 + 5px;
+                  y: root.height / 2 - 1px;
+                  width: 3px;
+                  height: 3px;
+                  border-radius: 2px;
+                  background: NumFlowTheme.label;
+                  opacity: root.more-glyph ? 0.88 : 0;
+              }
+
+              keyboard-focus := FocusScope {'''
+          if old_text not in design:
+              raise SystemExit("UtilityButton text block not found")
+          design = design.replace(old_text, new_text, 1)
+
+          old_a11y = "        accessible-label: root.text;"
+          new_a11y = '        accessible-label: root.a11y-label == "" ? root.text : root.a11y-label;'
+          if old_a11y not in design:
+              raise SystemExit("UtilityButton accessible label marker not found")
+          design = design.replace(old_a11y, new_a11y, 1)
+          design_path.write_text(design, encoding="utf-8")
+
+          app_path = Path("ui/app.slint")
+          app = app_path.read_text(encoding="utf-8")
+          old_app_import = 'import { Button, ComboBox, Slider } from "std-widgets.slint";'
+          new_app_import = 'import { Button, ComboBox } from "std-widgets.slint";'
+          if old_app_import not in app:
+              raise SystemExit("app std-widget import marker not found")
+          app = app.replace(old_app_import, new_app_import, 1)
+
+          old_design_import = '''    DisclosureRow, GlassToggle, MappingRow, MenuAction, NumFlowTheme, SegmentedControl,
+              Separator, UtilityButton'''
+          new_design_import = '''    DisclosureRow, GlassSlider, GlassToggle, MappingRow, MenuAction, NumFlowTheme,
+              SegmentedControl, Separator, UtilityButton'''
+          if old_design_import not in app:
+              raise SystemExit("app design-system import marker not found")
+          app = app.replace(old_design_import, new_design_import, 1)
+
+          slider_count = app.count("Slider {")
+          if slider_count != 3:
+              raise SystemExit(f"expected exactly 3 standard sliders, found {slider_count}")
+          app = app.replace("Slider {", "GlassSlider {")
+
+          for label in ("Pointer speed", "Pointer acceleration", "Sound volume"):
+              old = f'accesssible-label: "{label}";'
+              if old in app:
+                  raise SystemExit(f"unexpected misspelled accessibility marker: {old}")
+              old = f'accessible-label: "{label}";'
+              new = f'a11y-label: "{label}";'
+              if old not in app:
+                  raise SystemExit(f"slider accessibility marker not found: {label}")
+              app = app.replace(old, new, 1)
+
+          old_more = '''                    UtilityButton {
+
+                                  reduced-motion: root.reduced-motion;
+                                  text: "⋯";
+                                  min-width: 34px;
+                                  max-width: 34px;
+                                  clicked => { root.ui-sound-requested("open"); more-menu.show(); }
+                              }'''
+          new_more = '''                    UtilityButton {
+
+                                  reduced-motion: root.reduced-motion;
+                                  text: "";
+                                  more-glyph: true;
+                                  a11y-label: "More options";
+                                  min-width: 34px;
+                                  max-width: 34px;
+                                  clicked => { root.ui-sound-requested("open"); more-menu.show(); }
+                              }'''
+          if old_more not in app:
+              raise SystemExit("overflow UtilityButton block not found")
+          app = app.replace(old_more, new_more, 1)
+          app_path.write_text(app, encoding="utf-8")
+          '@ | python -
+
+      - name: Formatting
+        shell: pwsh
+        run: cargo fmt --all
+
+      - name: Formatting check
+        shell: pwsh
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        shell: pwsh
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        shell: pwsh
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        shell: pwsh
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Verify visual guardrails
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Select-String -Path ui/design-system.slint -Pattern 'export component GlassSlider' -Quiet)) { throw 'GlassSlider missing' }
+          if (-not (Select-String -Path ui/design-system.slint -Pattern 'input.has-focus' -Quiet)) { throw 'GlassSlider focus feedback missing' }
+          if (Select-String -Path ui/app.slint -Pattern 'text: "⋯"' -Quiet) { throw 'Font-dependent overflow glyph still present' }
+          if (-not (Select-String -Path ui/app.slint -Pattern 'more-glyph: true' -Quiet)) { throw 'Drawn overflow glyph missing' }
+          if (Select-String -Path ui/app.slint -Pattern '^\s*Slider \{' -Quiet) { throw 'System-accent Slider still used in AppWindow' }
+
+      - name: Commit validated UI fix
+        shell: pwsh
+        run: |
+          Remove-Item .github/workflows/ui-accent-fix-once.yml
+          git config user.name "Gend"
+          git config user.email "GendByteMaster@gmail.com"
+          git add -A
+          git commit -m "fix(ui): isolate controls from Windows accent"
+          git push origin HEAD:dev/master
