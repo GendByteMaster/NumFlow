@@ -29,6 +29,20 @@ jobs:
         shell: pwsh
         run: python scripts/_hold_startup_repair.py
 
+      - name: Remove obsolete hold fallback
+        shell: pwsh
+        run: |
+          $path = "crates/numflow-core/src/state.rs"
+          $text = Get-Content $path -Raw
+          $old = "            InputAction::Move(_)`r`n            | InputAction::Click`r`n            | InputAction::DoubleClick`r`n            | InputAction::Hold => Vec::new(),"
+          $new = "            InputAction::Move(_)`r`n            | InputAction::Click`r`n            | InputAction::DoubleClick => Vec::new(),"
+          if (-not $text.Contains($old)) {
+            $old = $old.Replace("`r`n", "`n")
+            $new = $new.Replace("`r`n", "`n")
+          }
+          if (-not $text.Contains($old)) { throw "obsolete Hold fallback marker not found" }
+          [System.IO.File]::WriteAllText($path, $text.Replace($old, $new))
+
       - name: Remove one-shot files
         shell: pwsh
         run: git rm -f scripts/_hold_startup_repair.py .github/workflows/hold-startup-repair-once.yml
