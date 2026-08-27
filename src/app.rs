@@ -1,11 +1,16 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::mpsc::Receiver,
+    thread::{self, JoinHandle},
+};
 
 use num_traits::ToPrimitive;
 use numflow_core::{
     Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton, PointerEffect,
     StateChange,
 };
-use slint::{ComponentHandle, Timer, TimerMode};
+use slint::ComponentHandle;
 
 use crate::{
     AppTray, AppWindow, MouseButtonMode,
@@ -21,7 +26,6 @@ use crate::{
 
 const DEFAULT_POINTER_SPEED: f32 = 180.0;
 const DEFAULT_POINTER_ACCELERATION: f32 = 900.0;
-const RUNTIME_EVENT_POLL: Duration = Duration::from_millis(16);
 
 type SharedUiSettings = Rc<RefCell<UiSettings>>;
 type SharedHud = Rc<RefCell<HudController>>;
@@ -702,8 +706,8 @@ fn start_runtime_event_bridge(
     hud: &SharedHud,
     store: &SharedConfigStore,
     runtime: &SharedRuntime,
-) -> Timer {
-    let timer = Timer::default();
+    wake_receiver: Option<Receiver<()>>,
+) -> Result<Option<JoinHandle<()>>, AppError> {
     let weak_window = window.as_weak();
     let weak_tray = tray.as_weak();
     let settings = Rc::clone(settings);
@@ -711,7 +715,7 @@ fn start_runtime_event_bridge(
     let store = Rc::clone(store);
     let runtime = Rc::clone(runtime);
 
-    timer.start(TimerMode::Repeated, RUNTIME_EVENT_POLL, move || {
+    window.on_runtime_events_ready(move || {
         let events = runtime.borrow().drain_events();
         if events.is_empty() {
             return;
@@ -748,7 +752,27 @@ fn start_runtime_event_bridge(
         }
     });
 
-    timer
+    let Some(wake_receiver) = wake_receiver else {
+        return Ok(None);
+    };
+    let weak_window = window.as_weak();
+    let join = thread::Builder::new()
+        .name("numflow-runtime-events".to_owned())
+        .spawn(move || {
+            while wake_receiver.recv().is_ok() {
+                if weak_window
+                    .upgrade_in_event_loop(|window| window.invoke_runtime_events_ready())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| {
+            AppError::Runtime(format!("failed to start runtime event bridge: {error}"))
+        })?;
+
+    Ok(Some(join))
 }
 
 fn connect_ui(
@@ -795,10 +819,10 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         tracing::warn!("configured Windows startup preference could not be applied");
     }
 
-    let runtime = Rc::new(RefCell::new(
-        BackgroundRuntime::start(settings.borrow().runtime_config())
-            .map_err(|error| AppError::Runtime(error.to_string()))?,
-    ));
+    let mut background_runtime = BackgroundRuntime::start(settings.borrow().runtime_config())
+        .map_err(|error| AppError::Runtime(error.to_string()))?;
+    let runtime_wake_receiver = background_runtime.take_wake_receiver();
+    let runtime = Rc::new(RefCell::new(background_runtime));
 
     let hud = Rc::new(RefCell::new(
         HudController::new().map_err(|error| AppError::Ui(error.to_string()))?,
@@ -816,8 +840,15 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
     );
 
     connect_ui(&window, tray, &settings, &hud, &store, &runtime);
-    let _runtime_event_timer =
-        start_runtime_event_bridge(&window, tray, &settings, &hud, &store, &runtime);
+    let runtime_event_bridge = start_runtime_event_bridge(
+        &window,
+        tray,
+        &settings,
+        &hud,
+        &store,
+        &runtime,
+        runtime_wake_receiver,
+    )?;
 
     if settings.borrow().start_minimized() {
         tracing::info!("starting NumFlow with settings window hidden");
@@ -831,6 +862,11 @@ pub fn run(tray: &AppTray) -> Result<(), AppError> {
         slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));
     if let Err(error) = runtime.borrow_mut().shutdown() {
         tracing::error!(%error, "background runtime failed during final shutdown");
+    }
+    if let Some(join) = runtime_event_bridge
+        && join.join().is_err()
+    {
+        tracing::error!("runtime event bridge thread panicked during shutdown");
     }
     event_loop_result
 }

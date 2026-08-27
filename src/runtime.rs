@@ -46,7 +46,7 @@ pub enum RuntimeError {
 #[cfg(windows)]
 mod platform {
     use std::{
-        sync::mpsc::{self, Receiver, Sender, TryRecvError},
+        sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
         thread::{self, JoinHandle},
         time::{Duration, Instant},
     };
@@ -73,22 +73,42 @@ mod platform {
     }
 
     #[derive(Debug)]
+    struct RuntimeEventSink {
+        events: Sender<RuntimeEvent>,
+        wake: SyncSender<()>,
+    }
+
+    impl RuntimeEventSink {
+        fn send(&self, event: RuntimeEvent) {
+            if self.events.send(event).is_ok() {
+                let _ = self.wake.try_send(());
+            }
+        }
+    }
+
+    #[derive(Debug)]
     pub struct BackgroundRuntime {
         command_sender: Sender<RuntimeCommand>,
         event_receiver: Receiver<RuntimeEvent>,
+        wake_receiver: Option<Receiver<()>>,
         join: Option<JoinHandle<()>>,
     }
 
     impl BackgroundRuntime {
         pub fn start(config: RuntimeConfig) -> Result<Self, RuntimeError> {
             let (command_sender, command_receiver) = mpsc::channel();
-            let (event_sender, event_receiver) = mpsc::channel();
+            let (event_sink, event_receiver) = mpsc::channel();
+            let (wake_sender, wake_receiver) = mpsc::sync_channel(1);
             let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
 
             let join = thread::Builder::new()
                 .name("numflow-runtime".to_owned())
                 .spawn(move || {
-                    worker_main(config, &command_receiver, &event_sender, &ready_sender);
+                    let event_sink = RuntimeEventSink {
+                        events: event_sink,
+                        wake: wake_sender,
+                    };
+                    worker_main(config, &command_receiver, &event_sink, &ready_sender);
                 })
                 .map_err(|error| RuntimeError::Start(error.to_string()))?;
 
@@ -96,6 +116,7 @@ mod platform {
                 Ok(Ok(())) => Ok(Self {
                     command_sender,
                     event_receiver,
+                    wake_receiver: Some(wake_receiver),
                     join: Some(join),
                 }),
                 Ok(Err(error)) => {
@@ -135,6 +156,11 @@ mod platform {
                 events.push(event);
             }
             events
+        }
+
+        #[must_use]
+        pub fn take_wake_receiver(&mut self) -> Option<Receiver<()>> {
+            self.wake_receiver.take()
         }
 
         pub fn shutdown(&mut self) -> Result<(), RuntimeError> {
@@ -287,7 +313,7 @@ mod platform {
     fn worker_main(
         config: RuntimeConfig,
         command_receiver: &Receiver<RuntimeCommand>,
-        event_sender: &Sender<RuntimeEvent>,
+        event_sink: &RuntimeEventSink,
         ready_sender: &mpsc::SyncSender<Result<(), String>>,
     ) {
         let (hook, keyboard_receiver) = match KeyboardHook::start() {
@@ -314,12 +340,12 @@ mod platform {
                         let effects = match machine.shutdown() {
                             Ok(effects) => effects,
                             Err(error) => {
-                                let _ = event_sender.send(RuntimeEvent::Fault(error.to_string()));
+                                event_sink.send(RuntimeEvent::Fault(error.to_string()));
                                 Vec::new()
                             }
                         };
                         if !effects.is_empty() {
-                            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+                            event_sink.send(RuntimeEvent::Effects(effects));
                         }
                         hook.emergency_disable();
                         running = false;
@@ -329,7 +355,7 @@ mod platform {
                         if let Err(error) =
                             apply_command(command, &mut machine, &hook, &mut normalizer)
                         {
-                            fail_safe(&mut machine, &hook, &mut normalizer, event_sender, &error);
+                            fail_safe(&mut machine, &hook, &mut normalizer, event_sink, &error);
                         }
                     }
                     Err(TryRecvError::Empty) => break,
@@ -359,7 +385,7 @@ mod platform {
                         }
                         hook.set_interception_enabled(machine.enabled());
                         if !effects.is_empty() {
-                            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+                            event_sink.send(RuntimeEvent::Effects(effects));
                         }
                     }
                     Err(error) => {
@@ -367,7 +393,7 @@ mod platform {
                             &mut machine,
                             &hook,
                             &mut normalizer,
-                            event_sender,
+                            event_sink,
                             &error.to_string(),
                         );
                     }
@@ -382,7 +408,7 @@ mod platform {
                     &mut machine,
                     &hook,
                     &mut normalizer,
-                    event_sender,
+                    event_sink,
                     &error.to_string(),
                 );
             }
@@ -432,7 +458,7 @@ mod platform {
         machine: &mut RuntimeMachine<WindowsPointer>,
         hook: &KeyboardHook,
         normalizer: &mut KeyboardEventNormalizer,
-        event_sender: &Sender<RuntimeEvent>,
+        event_sink: &RuntimeEventSink,
         reason: &str,
     ) {
         machine.motion.stop();
@@ -443,13 +469,13 @@ mod platform {
         hook.emergency_disable();
 
         if !effects.is_empty() {
-            let _ = event_sender.send(RuntimeEvent::Effects(effects));
+            event_sink.send(RuntimeEvent::Effects(effects));
         }
         let message = release_error.map_or_else(
             || reason.to_owned(),
             |error| format!("{reason}; additionally failed to release pointer state: {error}"),
         );
-        let _ = event_sender.send(RuntimeEvent::Fault(message));
+        event_sink.send(RuntimeEvent::Fault(message));
     }
 
     #[cfg(test)]
@@ -628,6 +654,11 @@ impl BackgroundRuntime {
     #[must_use]
     pub fn drain_events(&self) -> Vec<RuntimeEvent> {
         Vec::new()
+    }
+
+    #[must_use]
+    pub fn take_wake_receiver(&mut self) -> Option<std::sync::mpsc::Receiver<()>> {
+        None
     }
 
     pub fn shutdown(&mut self) -> Result<(), RuntimeError> {
