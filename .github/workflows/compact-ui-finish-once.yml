@@ -1,0 +1,56 @@
+name: One-shot NumFlow compact UI
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/compact-ui-finish-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply UI integration fixes
+        run: python scripts/apply_compact_ui_finish.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Commit validated compact UI
+        shell: pwsh
+        run: |
+          Remove-Item scripts/apply_compact_ui_finish.py
+          Remove-Item .github/workflows/compact-ui-finish-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor(ui): complete compact NumFlow utility"
+          git push origin HEAD:dev/master
