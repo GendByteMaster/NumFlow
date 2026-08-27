@@ -3,19 +3,27 @@ import { Palette } from "std-widgets.slint";
 export global NumFlowTheme {
     in property <brush> background: Palette.background;
     in property <brush> surface: Palette.alternate-background;
+    in property <brush> material: Palette.background.with-alpha(0.96);
+    in property <brush> material-raised: Palette.alternate-background.with-alpha(0.88);
     in property <brush> control: Palette.control-background;
     in property <brush> label: Palette.foreground;
     in property <brush> secondary-label: Palette.alternate-foreground;
-    in property <brush> separator: Palette.border;
+    in property <brush> tertiary-label: Palette.alternate-foreground.with-alpha(0.72);
+    in property <brush> separator: Palette.border.with-alpha(0.66);
     in property <brush> accent: Palette.accent-background;
     in property <brush> accent-foreground: Palette.accent-foreground;
     in property <brush> accent-soft: Palette.accent-background.with-alpha(0.14);
+    in property <brush> accent-strong: Palette.accent-background.with-alpha(0.22);
     in property <brush> hover: Palette.foreground.with-alpha(0.06);
-    in property <brush> pressed: Palette.foreground.with-alpha(0.10);
+    in property <brush> pressed: Palette.foreground.with-alpha(0.11);
+    in property <brush> focus-ring: Palette.accent-background.with-alpha(0.78);
+    in property <brush> destructive: #d94b4b;
+    in property <brush> destructive-soft: #d94b4b1c;
 
     in property <length> radius-small: 7px;
     in property <length> radius-medium: 10px;
-    in property <length> control-height: 32px;
+    in property <length> radius-large: 13px;
+    in property <length> control-height: 36px;
     in property <length> key-height: 48px;
 }
 
@@ -142,6 +150,344 @@ export component KeyTile inherits Rectangle {
             font-weight: root.active ? 600 : 400;
             horizontal-alignment: center;
             overflow: elide;
+        }
+    }
+}
+
+component SegmentedCell inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    background: interaction.pressed
+        ? NumFlowTheme.pressed
+        : interaction.has-hover && root.enabled
+            ? NumFlowTheme.hover
+            : transparent;
+    border-radius: NumFlowTheme.radius-small;
+    border-width: keyboard-focus.has-focus ? 2px : 0px;
+    border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
+    opacity: root.enabled ? 1 : 0.48;
+
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        spacing: 5px;
+        alignment: center;
+
+        Text {
+            text: root.selected ? "✓" : "";
+            color: NumFlowTheme.accent;
+            font-size: 10px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.label;
+            color: NumFlowTheme.label;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 450;
+            vertical-alignment: center;
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+        accessible-role: radio-button;
+        accessible-label: root.label;
+        accessible-checkable: true;
+        accessible-checked: root.selected;
+        accessible-action-default => { root.clicked(); }
+
+        KeyBinding { keys: @keys(Return); activated => { root.clicked(); } }
+        KeyBinding { keys: @keys(Space); activated => { root.clicked(); } }
+
+        interaction := TouchArea {
+            enabled: root.enabled;
+            clicked => {
+                keyboard-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component SegmentedControl inherits Rectangle {
+    in property <string> first-label;
+    in property <string> second-label;
+    in property <string> third-label;
+    in-out property <int> selected-index: 0;
+    in property <bool> enabled: true;
+    in property <bool> reduced-motion: false;
+    callback selected(int);
+
+    private property <length> segment-width: (root.width - 6px) / 3;
+
+    min-height: NumFlowTheme.control-height;
+    max-height: NumFlowTheme.control-height;
+    background: NumFlowTheme.material-raised;
+    border-width: 1px;
+    border-color: NumFlowTheme.separator;
+    border-radius: NumFlowTheme.radius-medium;
+    opacity: root.enabled ? 1 : 0.58;
+
+    selected-indicator := Rectangle {
+        x: root.selected-index == 0
+            ? 3px
+            : root.selected-index == 1
+                ? 3px + root.segment-width
+                : 3px + root.segment-width * 2;
+        y: 3px;
+        width: root.segment-width;
+        height: root.height - 6px;
+        background: NumFlowTheme.accent-soft;
+        border-width: 1px;
+        border-color: NumFlowTheme.accent.with-alpha(0.36);
+        border-radius: NumFlowTheme.radius-small;
+
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: #ffffff26;
+        }
+
+        animate x {
+            duration: root.reduced-motion ? 0ms : 190ms;
+            easing: ease-out;
+        }
+    }
+
+    SegmentedCell {
+        x: 3px;
+        y: 3px;
+        width: root.segment-width;
+        height: root.height - 6px;
+        label: root.first-label;
+        selected: root.selected-index == 0;
+        enabled: root.enabled;
+        clicked => { root.selected-index = 0; root.selected(0); }
+    }
+
+    SegmentedCell {
+        x: 3px + root.segment-width;
+        y: 3px;
+        width: root.segment-width;
+        height: root.height - 6px;
+        label: root.second-label;
+        selected: root.selected-index == 1;
+        enabled: root.enabled;
+        clicked => { root.selected-index = 1; root.selected(1); }
+    }
+
+    SegmentedCell {
+        x: 3px + root.segment-width * 2;
+        y: 3px;
+        width: root.segment-width;
+        height: root.height - 6px;
+        label: root.third-label;
+        selected: root.selected-index == 2;
+        enabled: root.enabled;
+        clicked => { root.selected-index = 2; root.selected(2); }
+    }
+}
+
+export component UtilityButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> destructive: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    min-height: 32px;
+    max-height: 32px;
+    min-width: 32px;
+    border-radius: NumFlowTheme.radius-small;
+    border-width: keyboard-focus.has-focus ? 2px : 1px;
+    border-color: keyboard-focus.has-focus
+        ? NumFlowTheme.focus-ring
+        : root.destructive
+            ? NumFlowTheme.destructive.with-alpha(0.30)
+            : NumFlowTheme.separator.with-alpha(0.72);
+    background: interaction.pressed
+        ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
+        : interaction.has-hover && root.enabled
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover
+            : transparent;
+    opacity: root.enabled ? 1 : 0.48;
+
+    Text {
+        text: root.text;
+        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+        font-size: 12px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        enabled: root.enabled;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => { root.clicked(); }
+
+        KeyBinding { keys: @keys(Return); activated => { root.clicked(); } }
+        KeyBinding { keys: @keys(Space); activated => { root.clicked(); } }
+
+        interaction := TouchArea {
+            enabled: root.enabled;
+            clicked => {
+                keyboard-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component DisclosureRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> expanded: false;
+    in property <bool> reduced-motion: false;
+    callback toggled();
+
+    min-height: 34px;
+    max-height: 34px;
+    border-radius: NumFlowTheme.radius-small;
+    background: interaction.pressed
+        ? NumFlowTheme.pressed
+        : interaction.has-hover
+            ? NumFlowTheme.hover
+            : transparent;
+    border-width: keyboard-focus.has-focus ? 2px : 0px;
+    border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
+
+    HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 4px;
+        spacing: 8px;
+        cross-axis-alignment: center;
+
+        Text {
+            text: root.label;
+            color: NumFlowTheme.label;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+
+        Text {
+            text: root.expanded ? "⌄" : "›";
+            color: NumFlowTheme.secondary-label;
+            font-size: 17px;
+            font-weight: 500;
+        }
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+        accessible-role: button;
+        accessible-label: root.label;
+        accessible-action-default => { root.toggled(); }
+
+        KeyBinding { keys: @keys(Return); activated => { root.toggled(); } }
+        KeyBinding { keys: @keys(Space); activated => { root.toggled(); } }
+
+        interaction := TouchArea {
+            clicked => {
+                keyboard-focus.focus();
+                root.toggled();
+            }
+        }
+    }
+}
+
+export component MappingRow inherits Rectangle {
+    in property <string> key-label;
+    in property <string> action-label;
+
+    min-height: 25px;
+    max-height: 25px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 10px;
+        cross-axis-alignment: center;
+
+        Text {
+            text: root.key-label;
+            color: NumFlowTheme.label;
+            font-size: 12px;
+            font-weight: 600;
+            min-width: 42px;
+            max-width: 42px;
+        }
+
+        Text {
+            text: root.action-label;
+            color: NumFlowTheme.secondary-label;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+}
+
+export component MenuAction inherits Rectangle {
+    in property <string> text;
+    in property <bool> destructive: false;
+    callback clicked();
+
+    min-height: 34px;
+    max-height: 34px;
+    border-radius: NumFlowTheme.radius-small;
+    background: interaction.pressed
+        ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
+        : interaction.has-hover
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover
+            : transparent;
+    border-width: keyboard-focus.has-focus ? 2px : 0px;
+    border-color: keyboard-focus.has-focus ? NumFlowTheme.focus-ring : transparent;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        text: root.text;
+        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+        font-size: 12px;
+        font-weight: root.destructive ? 550 : 450;
+        vertical-alignment: center;
+    }
+
+    keyboard-focus := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        focus-on-click: true;
+        focus-on-tab-navigation: true;
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => { root.clicked(); }
+
+        KeyBinding { keys: @keys(Return); activated => { root.clicked(); } }
+        KeyBinding { keys: @keys(Space); activated => { root.clicked(); } }
+
+        interaction := TouchArea {
+            clicked => {
+                keyboard-focus.focus();
+                root.clicked();
+            }
         }
     }
 }
