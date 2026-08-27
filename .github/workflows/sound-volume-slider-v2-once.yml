@@ -1,0 +1,318 @@
+name: One-shot NumFlow sound volume slider v2
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/sound-volume-slider-v2-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply sound volume slider and Clippy fix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+          import re
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"pattern not found in {path}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def replace_braced_block_containing(path: str, needle: str, new_lines: list[str]) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              needle_index = text.find(needle)
+              if needle_index < 0:
+                  raise SystemExit(f"needle not found in {path}: {needle!r}")
+
+              start = text.rfind("Rectangle {", 0, needle_index)
+              if start < 0:
+                  raise SystemExit(f"owning Rectangle not found in {path}")
+              line_start = text.rfind("\n", 0, start) + 1
+              brace = text.find("{", start)
+              depth = 0
+              in_string = False
+              escaped = False
+              end = None
+              for index in range(brace, len(text)):
+                  char = text[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == "{":
+                      depth += 1
+                  elif char == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = index + 1
+                          break
+              if end is None:
+                  raise SystemExit(f"unterminated Rectangle in {path}")
+
+              replacement = "\n".join(new_lines)
+              p.write_text(text[:line_start] + replacement + text[end:], encoding="utf-8")
+
+          # Native audio: live 0..100 volume and Rust 1.98 Clippy-compliant PCM iteration.
+          path = "crates/numflow-windows/src/audio.rs"
+          replace_once(path, "atomic::{AtomicBool, Ordering}", "atomic::{AtomicBool, AtomicU8, Ordering}")
+          replace_once(path, "const RUNTIME_GAIN_PERCENT: i32 = 50;\n", "")
+          replace_once(
+              path,
+              "    enabled: Arc<AtomicBool>,\n    running: Arc<AtomicBool>,",
+              "    enabled: Arc<AtomicBool>,\n    volume_percent: Arc<AtomicU8>,\n    running: Arc<AtomicBool>,",
+          )
+          replace_once(
+              path,
+              "        let enabled = Arc::new(AtomicBool::new(true));\n        let running = Arc::new(AtomicBool::new(true));\n        let worker_running = Arc::clone(&running);",
+              "        let enabled = Arc::new(AtomicBool::new(true));\n        let volume_percent = Arc::new(AtomicU8::new(25));\n        let running = Arc::new(AtomicBool::new(true));\n        let worker_running = Arc::clone(&running);\n        let worker_volume_percent = Arc::clone(&volume_percent);",
+          )
+          replace_once(
+              path,
+              "                    play_wave(cue);",
+              "                    play_wave(cue, worker_volume_percent.load(Ordering::Acquire));",
+          )
+          replace_once(
+              path,
+              "            sender: Some(sender),\n            enabled,\n            running,",
+              "            sender: Some(sender),\n            enabled,\n            volume_percent,\n            running,",
+          )
+          replace_once(
+              path,
+              "    pub fn enabled(&self) -> bool {\n        self.enabled.load(Ordering::Acquire)\n    }\n",
+              "    pub fn enabled(&self) -> bool {\n        self.enabled.load(Ordering::Acquire)\n    }\n\n    /// Sets semantic feedback volume without touching the Windows mixer.\n    pub fn set_volume_percent(&self, volume_percent: u8) {\n        self.volume_percent\n            .store(volume_percent.min(100), Ordering::Release);\n    }\n",
+          )
+          replace_once(
+              path,
+              "fn play_wave(cue: AudioCue) {\n    let mut bytes = wave_bytes(cue).to_vec();\n    attenuate_pcm16_wave(&mut bytes, RUNTIME_GAIN_PERCENT);",
+              "fn play_wave(cue: AudioCue, volume_percent: u8) {\n    let volume_percent = volume_percent.min(100);\n    if volume_percent == 0 {\n        return;\n    }\n\n    let mut bytes = wave_bytes(cue).to_vec();\n    attenuate_pcm16_wave(&mut bytes, i32::from(volume_percent));",
+          )
+          replace_once(
+              path,
+              "    for sample in bytes[data_start..data_end].chunks_exact_mut(2) {",
+              "    let (samples, _) = bytes[data_start..data_end].as_chunks_mut::<2>();\n    for sample in samples {",
+          )
+
+          # Persistent config. Missing field in existing schema-v1 configs becomes 25%.
+          path = "src/config.rs"
+          replace_once(
+              path,
+              "const CONFIG_FILE_NAME: &str = \"config.toml\";",
+              "const CONFIG_FILE_NAME: &str = \"config.toml\";\nconst DEFAULT_SOUND_VOLUME: u8 = 25;\n\nconst fn default_sound_volume() -> u8 {\n    DEFAULT_SOUND_VOLUME\n}",
+          )
+          replace_once(
+              path,
+              "    #[error(\"active profile `{0}` does not exist\")]\n    MissingActiveProfile(String),",
+              "    #[error(\"active profile `{0}` does not exist\")]\n    MissingActiveProfile(String),\n    #[error(\"interface sound volume {0}% is outside the supported 0..=100 range\")]\n    InvalidSoundVolume(u8),",
+          )
+          replace_once(
+              path,
+              "    #[serde(default)]\n    pub sounds_enabled: InterfaceSoundsEnabled,\n    pub start_minimized: bool,",
+              "    #[serde(default)]\n    pub sounds_enabled: InterfaceSoundsEnabled,\n    #[serde(default = \"default_sound_volume\")]\n    pub sound_volume: u8,\n    pub start_minimized: bool,",
+          )
+          replace_once(
+              path,
+              "            sounds_enabled: InterfaceSoundsEnabled::ENABLED,\n            start_minimized: false,",
+              "            sounds_enabled: InterfaceSoundsEnabled::ENABLED,\n            sound_volume: DEFAULT_SOUND_VOLUME,\n            start_minimized: false,",
+          )
+          replace_once(
+              path,
+              "        if !self.profiles.contains_key(&self.active_profile) {",
+              "        if self.sound_volume > 100 {\n            return Err(ConfigError::InvalidSoundVolume(self.sound_volume));\n        }\n\n        if !self.profiles.contains_key(&self.active_profile) {",
+          )
+
+          # Runtime plumbing: one volume source for UI, NumLock and hold/release feedback.
+          path = "src/runtime.rs"
+          replace_once(path, "    pub sounds_enabled: bool,\n}", "    pub sounds_enabled: bool,\n    pub sound_volume: u8,\n}")
+          replace_once(path, "            sounds_enabled: true,\n        }", "            sounds_enabled: true,\n            sound_volume: 25,\n        }")
+          replace_once(
+              path,
+              "    pub const fn with_sounds_enabled(mut self, enabled: bool) -> Self {\n        self.sounds_enabled = enabled;\n        self\n    }",
+              "    pub const fn with_sounds_enabled(mut self, enabled: bool) -> Self {\n        self.sounds_enabled = enabled;\n        self\n    }\n\n    #[must_use]\n    pub const fn with_sound_volume(mut self, volume_percent: u8) -> Self {\n        self.sound_volume = volume_percent.min(100);\n        self\n    }",
+          )
+          replace_once(path, "        SetSoundsEnabled(bool),\n        PlaySound(UiSoundCue),", "        SetSoundsEnabled(bool),\n        SetSoundVolume(u8),\n        PlaySound(UiSoundCue),")
+          replace_once(
+              path,
+              "        pub fn set_sounds_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {\n            self.send(RuntimeCommand::SetSoundsEnabled(enabled))\n        }\n\n        pub fn play_sound",
+              "        pub fn set_sounds_enabled(&self, enabled: bool) -> Result<(), RuntimeError> {\n            self.send(RuntimeCommand::SetSoundsEnabled(enabled))\n        }\n\n        pub fn set_sound_volume(&self, volume_percent: u8) -> Result<(), RuntimeError> {\n            self.send(RuntimeCommand::SetSoundVolume(volume_percent.min(100)))\n        }\n\n        pub fn play_sound",
+          )
+          replace_once(
+              path,
+              "    fn start_audio_feedback(enabled: bool) -> Option<AudioFeedbackService> {\n        match AudioFeedbackService::start() {\n            Ok(service) => {\n                service.set_enabled(enabled);",
+              "    fn start_audio_feedback(\n        enabled: bool,\n        volume_percent: u8,\n    ) -> Option<AudioFeedbackService> {\n        match AudioFeedbackService::start() {\n            Ok(service) => {\n                service.set_enabled(enabled);\n                service.set_volume_percent(volume_percent);",
+          )
+          replace_once(path, "        let audio_feedback = start_audio_feedback(config.sounds_enabled);", "        let audio_feedback = start_audio_feedback(config.sounds_enabled, config.sound_volume);")
+          replace_once(
+              path,
+              "                if let Some(audio_feedback) = audio_feedback {\n                    audio_feedback.set_enabled(config.sounds_enabled);\n                }\n                machine\n                    .configure(config)",
+              "                if let Some(audio_feedback) = audio_feedback {\n                    audio_feedback.set_enabled(config.sounds_enabled);\n                    audio_feedback.set_volume_percent(config.sound_volume);\n                }\n                machine\n                    .configure(config)",
+          )
+          replace_once(
+              path,
+              "            RuntimeCommand::SetSoundsEnabled(enabled) => {\n                if let Some(audio_feedback) = audio_feedback {\n                    audio_feedback.set_enabled(enabled);\n                }\n            }\n            RuntimeCommand::PlaySound(cue) => {",
+              "            RuntimeCommand::SetSoundsEnabled(enabled) => {\n                if let Some(audio_feedback) = audio_feedback {\n                    audio_feedback.set_enabled(enabled);\n                }\n            }\n            RuntimeCommand::SetSoundVolume(volume_percent) => {\n                if let Some(audio_feedback) = audio_feedback {\n                    audio_feedback.set_volume_percent(volume_percent);\n                }\n            }\n            RuntimeCommand::PlaySound(cue) => {",
+          )
+
+          # Non-Windows API parity for app compilation on other targets.
+          p = Path(path)
+          text = p.read_text(encoding="utf-8")
+          tail_index = text.find("#[cfg(not(windows))]\nmod platform")
+          if tail_index >= 0:
+              head, tail = text[:tail_index], text[tail_index:]
+              method = re.search(
+                  r"(?P<body>        pub fn set_sounds_enabled\([^\n]+\) -> Result<\(\), RuntimeError> \{\n(?:            .*\n)*?        \}\n)",
+                  tail,
+              )
+              if not method:
+                  raise SystemExit("non-Windows set_sounds_enabled method not found")
+              extra = method.group("body") + "\n        pub fn set_sound_volume(&self, _volume_percent: u8) -> Result<(), RuntimeError> {\n            Ok(())\n        }\n"
+              tail = tail[:method.start()] + extra + tail[method.end():]
+              p.write_text(head + tail, encoding="utf-8")
+
+          # App state + live callback + persistence.
+          path = "src/app.rs"
+          replace_once(
+              path,
+              "    fn sounds_enabled(&self) -> bool {\n        self.config.sounds_enabled.get()\n    }",
+              "    fn sounds_enabled(&self) -> bool {\n        self.config.sounds_enabled.get()\n    }\n\n    fn set_sound_volume(&mut self, volume_percent: u8) {\n        self.config.sound_volume = volume_percent.min(100);\n    }\n\n    fn sound_volume(&self) -> u8 {\n        self.config.sound_volume.min(100)\n    }",
+          )
+          replace_once(path, "        .with_sounds_enabled(self.sounds_enabled())", "        .with_sounds_enabled(self.sounds_enabled())\n        .with_sound_volume(self.sound_volume())")
+          replace_once(path, "    window.set_sounds_enabled(settings.sounds_enabled());\n    window.set_active_profile", "    window.set_sounds_enabled(settings.sounds_enabled());\n    window.set_sound_volume(f32::from(settings.sound_volume()));\n    window.set_active_profile")
+          replace_once(
+              path,
+              "fn runtime_set_sounds_enabled(runtime: &SharedRuntime, enabled: bool) {\n    if let Err(error) = runtime.borrow().set_sounds_enabled(enabled) {\n        tracing::warn!(%error, enabled, \"failed to update interface sound preference in runtime\");\n    }\n}",
+              "fn runtime_set_sounds_enabled(runtime: &SharedRuntime, enabled: bool) {\n    if let Err(error) = runtime.borrow().set_sounds_enabled(enabled) {\n        tracing::warn!(%error, enabled, \"failed to update interface sound preference in runtime\");\n    }\n}\n\nfn runtime_set_sound_volume(runtime: &SharedRuntime, volume_percent: u8) {\n    if let Err(error) = runtime.borrow().set_sound_volume(volume_percent) {\n        tracing::warn!(\n            %error,\n            volume_percent,\n            \"failed to update interface sound volume in runtime\"\n        );\n    }\n}",
+          )
+          marker = "    {\n        let settings = Rc::clone(settings);\n        let runtime = Rc::clone(runtime);\n        window.on_ui_sound_requested(move |name| {"
+          volume_block = "    {\n        let settings = Rc::clone(settings);\n        let store = Rc::clone(store);\n        let runtime = Rc::clone(runtime);\n        window.on_sound_volume_changed(move |volume| {\n            let volume_percent = volume.round().to_u8().unwrap_or(25).min(100);\n            if settings.borrow().sound_volume() == volume_percent {\n                return;\n            }\n            settings.borrow_mut().set_sound_volume(volume_percent);\n            runtime_set_sound_volume(&runtime, volume_percent);\n            persist_configuration(&settings, &store);\n        });\n    }\n\n" + marker
+          replace_once(path, marker, volume_block)
+
+          # Slint: compact slider lives in the existing Interface sounds row.
+          path = "ui/app.slint"
+          replace_once(path, "    in-out property <bool> sounds-enabled: true;\n    in-out property <string> active-profile:", "    in-out property <bool> sounds-enabled: true;\n    in-out property <float> sound-volume: 25;\n    in-out property <string> active-profile:")
+          replace_once(path, "    callback sounds-toggled(bool);\n    callback ui-sound-requested(string);", "    callback sounds-toggled(bool);\n    callback sound-volume-changed(float);\n    callback ui-sound-requested(string);")
+          replace_braced_block_containing(
+              path,
+              'Text { text: "Interface sounds";',
+              [
+                  "                    Rectangle {",
+                  "                        min-height: 40px;",
+                  "                        max-height: 40px;",
+                  "                        background: transparent;",
+                  "                        HorizontalLayout {",
+                  "                            spacing: 10px;",
+                  "                            cross-axis-alignment: center;",
+                  "                            VerticalLayout {",
+                  "                                spacing: 1px;",
+                  '                                Text { text: "Interface sounds"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }',
+                  '                                Text { text: "Semantic feedback volume"; color: NumFlowTheme.secondary-label; font-size: 10px; }',
+                  "                            }",
+                  "                            Rectangle { horizontal-stretch: 1; background: transparent; }",
+                  "                            Slider {",
+                  "                                enabled: root.advanced-open && root.sounds-enabled;",
+                  '                                accessible-label: "Sound volume";',
+                  "                                min-width: 112px;",
+                  "                                max-width: 112px;",
+                  "                                minimum: 0;",
+                  "                                maximum: 100;",
+                  "                                step: 5;",
+                  "                                value <=> root.sound-volume;",
+                  "                                changed(value) => {",
+                  "                                    root.sound-volume-changed(value);",
+                  "                                    root.mark-saved();",
+                  "                                }",
+                  "                            }",
+                  "                            Text {",
+                  r'                                text: "\{Math.round(root.sound-volume)}%";',
+                  "                                color: NumFlowTheme.secondary-label;",
+                  "                                opacity: root.sounds-enabled ? 1 : 0.45;",
+                  "                                font-size: 10px;",
+                  "                                font-weight: 500;",
+                  "                                horizontal-alignment: right;",
+                  "                                min-width: 30px;",
+                  "                                max-width: 30px;",
+                  "                            }",
+                  "                            GlassToggle {",
+                  "                                enabled: root.advanced-open;",
+                  '                                a11y-label: "Interface sounds";',
+                  "                                checked <=> root.sounds-enabled;",
+                  "                                reduced-motion: root.reduced-motion;",
+                  "                                toggled(checked) => {",
+                  "                                    root.sounds-toggled(checked);",
+                  "                                    root.mark-saved();",
+                  "                                }",
+                  "                            }",
+                  "                        }",
+                  "                    }",
+              ],
+          )
+
+          print("Sound volume slider v2 patch applied")
+          '@ | python -
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Verify sound volume guardrails
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Select-String -Path crates/numflow-windows/src/audio.rs -Pattern 'chunks_exact_mut\(2\)' -Quiet) { throw 'Clippy regression still present' }
+          if (-not (Select-String -Path crates/numflow-windows/src/audio.rs -Pattern 'AtomicU8' -Quiet)) { throw 'Atomic runtime volume missing' }
+          if (-not (Select-String -Path src/config.rs -Pattern 'sound_volume' -Quiet)) { throw 'Persistent sound volume missing' }
+          if (-not (Select-String -Path src/runtime.rs -Pattern 'SetSoundVolume' -Quiet)) { throw 'Runtime sound volume command missing' }
+          if (-not (Select-String -Path ui/app.slint -Pattern 'Sound volume' -Quiet)) { throw 'Advanced sound volume slider missing' }
+          if (-not (Select-String -Path ui/app.slint -Pattern 'maximum: 100' -Quiet)) { throw 'Sound volume max is not 100%' }
+          if (-not (Select-String -Path ui/app.slint -Pattern 'step: 5' -Quiet)) { throw 'Sound volume step is not 5%' }
+
+      - name: Commit validated fix
+        shell: pwsh
+        run: |
+          Remove-Item .github/workflows/sound-volume-slider-once.yml
+          Remove-Item .github/workflows/sound-volume-slider-v2-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(audio): add persistent sound volume control"
+          git push origin HEAD:dev/master
