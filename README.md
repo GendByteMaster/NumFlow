@@ -32,7 +32,7 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 - Configurable speed, acceleration, precision mode, and per-profile bindings.
 - Left, right, and middle mouse-button selection.
 - Single click, double click, hold/drag lock, and release.
-- Main Slint settings window with live status and NumPad visualization.
+- Compact material-styled Slint settings window with a separate editable Bindings panel.
 - Status icons for NumFlow state, selected mouse button, and precision mode.
 - Built-in `Normal`, `Precision`, and `Fast` profiles.
 - Editable NumPad bindings that apply at runtime.
@@ -67,6 +67,17 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 | `-` | Select middle mouse button |
 
 Num Lock itself is reserved by NumFlow while the app is running. Other NumPad bindings are configurable; the core logic does not depend on fixed virtual-key codes.
+
+## Installation
+
+Windows x64 releases provide two artifacts:
+
+- **MSI:** `NumFlow-<version>-x64.msi` installs to `C:\Program Files\NumFlow`, creates a Start Menu shortcut, and appears in Windows Installed Apps.
+- **Portable:** `NumFlow-<version>-portable-x64.zip` can be extracted and run without installation.
+
+`Start with Windows` remains an explicit user preference. When enabled, NumFlow registers the current executable under the current-user Windows Run key with `--background`, so the global input runtime and tray start after sign-in without opening the settings window. The startup registration itself does not require administrator rights.
+
+See [`docs/INSTALLATION.md`](docs/INSTALLATION.md) for installation, portable usage, autostart, uninstall, signing status, and checksum details.
 
 ## Running from source
 
@@ -108,6 +119,7 @@ The configuration is versioned (`schema_version = 1`) and currently contains:
 - HUD state;
 - start-minimized state;
 - start-with-Windows state;
+- interface-sound enable state and 0–100% volume;
 - profile speed / maximum speed / acceleration;
 - precision and boost multipliers;
 - selected mouse button;
@@ -115,7 +127,7 @@ The configuration is versioned (`schema_version = 1`) and currently contains:
 
 Writes are atomic. Invalid or unsupported configuration is recovered to safe defaults rather than being applied partially.
 
-The audio service already exposes an enable/disable control internally so a user-facing sound toggle can be added to Settings later without changing the Num Lock runtime architecture.
+Interface sounds can be enabled or disabled in Advanced settings, and their 0–100% volume is persisted independently from the Windows system mixer.
 
 ## Architecture
 
@@ -162,7 +174,7 @@ NumFlow treats input interception and drag state as safety-critical:
 - UI wakeups are event-driven;
 - disable/shutdown paths stop movement and release any held mouse button.
 
-One Phase 11 reliability item is still intentionally open: the `RuntimeEvent → UI` event path needs bounded/coalescing semantics that preserve faults and state transitions without ever blocking the pointer worker.
+The `RuntimeEvent → UI` bridge uses bounded, non-blocking delivery so a stalled UI cannot create an unbounded producer queue. Manual soak and fault/backpressure validation remains part of the release checklist.
 
 ## CI
 
@@ -179,7 +191,6 @@ The Phase 11 idle-runtime change passed the full gate with 78 tests (30 applicat
 
 The remaining work is primarily validation and release readiness rather than major product functionality:
 
-- design and validate bounded/coalesced `RuntimeEvent → UI` delivery;
 - long-running resource/soak validation;
 - manual Windows 10/11 validation;
 - DPI scaling validation from 100% through 200%;
@@ -187,10 +198,10 @@ The remaining work is primarily validation and release readiness rather than maj
 - foreground/background application validation;
 - multi-monitor and sleep/resume validation;
 - final accessibility and keyboard-navigation pass;
-- Windows executable icon/metadata and packaging strategy;
-- release artifact checksums, changelog, usage notes, and known limitations.
+- final executable metadata and production code-signing policy;
+- clean-machine MSI/portable validation and remaining manual release evidence.
 
-See [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) and the [v0.1 roadmap](https://github.com/GendByteMaster/NumFlow/issues/1).
+See [`docs/INSTALLATION.md`](docs/INSTALLATION.md), [`docs/RELEASING.md`](docs/RELEASING.md), [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md), [`CHANGELOG.md`](CHANGELOG.md), and the [v0.1 roadmap](https://github.com/GendByteMaster/NumFlow/issues/1).
 
 ## Windows input limitation
 

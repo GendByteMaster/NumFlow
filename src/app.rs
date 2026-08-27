@@ -1025,7 +1025,26 @@ fn connect_ui(
     connect_tray(window, tray, settings, hud, store, runtime);
 }
 
-pub fn run() -> Result<(), AppError> {
+fn show_main_window_if_needed(
+    window: &AppWindow,
+    settings: &UiSettings,
+    background: bool,
+) -> Result<(), AppError> {
+    if background || settings.start_minimized() {
+        tracing::info!(
+            background,
+            start_minimized = settings.start_minimized(),
+            "starting NumFlow with settings window hidden"
+        );
+        Ok(())
+    } else {
+        window
+            .show()
+            .map_err(|error| AppError::Ui(error.to_string()))
+    }
+}
+
+pub fn run(background: bool) -> Result<(), AppError> {
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting NumFlow");
 
     let store = Rc::new(ConfigStore::for_current_user()?);
@@ -1122,13 +1141,7 @@ pub fn run() -> Result<(), AppError> {
         runtime_wake_receiver,
     )?;
 
-    if settings.borrow().start_minimized() {
-        tracing::info!("starting NumFlow with settings window hidden");
-    } else {
-        window
-            .show()
-            .map_err(|error| AppError::Ui(error.to_string()))?;
-    }
+    show_main_window_if_needed(&window, &settings.borrow(), background)?;
 
     let event_loop_result =
         slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));

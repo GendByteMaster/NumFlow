@@ -102,7 +102,7 @@ Release build:
 cargo build --locked --workspace --release --all-features
 ```
 
-The release executable is produced under the Cargo release target directory. Packaging is not finalized yet; do not treat a raw release binary as the final v0.1 distribution format.
+The release executable is produced under the Cargo release target directory. Packaged Windows distributions are built from that executable as a WiX MSI and a portable ZIP; see `RELEASING.md`.
 
 ## Required quality gate
 
@@ -133,7 +133,7 @@ Current schema version:
 1
 ```
 
-The config model owns profile selection, HUD state, start-minimized/start-with-Windows state, motion values, precision/boost multipliers, selected mouse button, and bindings.
+The config model owns profile selection, HUD state, start-minimized/start-with-Windows state, interface-sound enable/volume state, motion values, precision/boost multipliers, selected mouse button, and bindings.
 
 Configuration rules:
 
@@ -145,7 +145,7 @@ Configuration rules:
 
 Do not introduce ad-hoc settings outside the typed configuration model.
 
-The Windows audio service already supports being enabled/disabled internally. A future Settings toggle for mode-switch sounds should connect to that service and be added to the typed config instead of introducing a separate global flag.
+The Windows audio service is controlled through the typed configuration model: Advanced settings persist both the interface-sound enable state and the 0–100% volume, and runtime updates apply without changing the Windows system mixer.
 
 ## Runtime model
 
@@ -205,18 +205,11 @@ Current behaviour:
 - the command queue is bounded;
 - the keyboard-hook event queue is bounded and the hook callback uses non-blocking delivery.
 
-### Remaining Phase 11 concurrency work
+### Runtime event backpressure
 
-`RuntimeEvent → UI` delivery is still an open reliability item. The final design must be bounded without blocking the pointer worker.
+`RuntimeEvent → UI` delivery uses a bounded, non-blocking queue. The runtime is the single producer; when the UI queue is full it evicts one stale UI event before retrying delivery, while the latest runtime event carries an authoritative state snapshot used to resynchronize UI/tray/HUD state.
 
-A correct solution should distinguish event importance:
-
-- faults must not be silently lost;
-- state snapshots can usually be coalesced to the latest value;
-- UI lag must not stall input interception or pointer release;
-- memory use must remain bounded during a stalled/minimized UI.
-
-Do not solve this by replacing the event sender with a blocking bounded send from the pointer worker.
+Manual release validation must still exercise stalled/minimized UI, fault delivery, and long-running memory behaviour. Do not replace the non-blocking design with a blocking send from the pointer worker.
 
 ## Safety invariants
 
@@ -316,3 +309,12 @@ When behaviour changes, update documentation in the same `dev/master` change whe
 - this document for architecture or development workflow;
 - `docs/RELEASE_CHECKLIST.md` for release evidence and pending manual verification;
 - Roadmap #1 for product-phase tracking/evidence.
+
+
+## Windows distribution development
+
+Distribution changes must preserve the normal Rust quality gate and prove that the MSI and portable archive can be built from the same release executable. WiX authoring lives in `installer/NumFlow.wxs`; release automation lives in `.github/workflows/release.yml`.
+
+The MSI is a per-machine x64 package for `Program Files`, while `Start with Windows` remains a per-user runtime preference implemented by `numflow-windows`. Autostart invokes the installed or portable executable with `--background`; do not move this responsibility into the installer or force startup on users.
+
+For local packaging commands and tag/version rules, see [`RELEASING.md`](RELEASING.md). For end-user behaviour, see [`INSTALLATION.md`](INSTALLATION.md).

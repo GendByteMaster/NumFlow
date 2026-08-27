@@ -34,7 +34,7 @@ These items are automated evidence only. They do not replace the manual matrix b
 
 ### Runtime/backpressure
 
-- [ ] Replace the remaining unbounded `RuntimeEvent → UI` delivery path with bounded/coalescing semantics.
+- [x] `RuntimeEvent → UI` delivery uses a bounded, non-blocking event queue with stale-event eviction under pressure.
 - [ ] Verify a stalled/minimized UI cannot cause unbounded memory growth.
 - [ ] Verify fault delivery is not silently lost under UI backpressure.
 - [ ] Add focused tests for event coalescing/overflow behaviour.
@@ -69,7 +69,7 @@ For every scaling level verify:
 
 - settings layout remains usable;
 - no clipped labels/controls;
-- NumPad visualization remains readable;
+- Bindings panel remains readable and reachable;
 - HUD remains visible and sensibly positioned;
 - focus indication remains clear.
 
@@ -128,7 +128,7 @@ For every scaling level verify:
 - [ ] Tray open/settings action.
 - [ ] Tray mode/status synchronization with Num Lock.
 - [ ] Start minimized.
-- [ ] Start with Windows registration.
+- [ ] Start with Windows registration uses `--background` and opens no settings window after sign-in.
 - [ ] Single-instance behaviour.
 - [ ] Sleep → resume with Num Lock state rechecked/synchronized.
 - [ ] Multi-monitor movement/use.
@@ -153,20 +153,18 @@ For every scaling level verify:
 
 ## Packaging and Phase 12
 
-- [ ] Generate production Windows application icon resources from `assets/numflow-icon.svg`.
-- [ ] Add executable metadata.
+- [x] Generate production Windows application icon resources from `assets/numflow-icon.svg`.
+- [ ] Add/finalize executable metadata and production code signing.
 - [ ] Confirm release version.
-- [ ] Decide distribution format:
-  - [ ] portable archive, or
-  - [ ] traditional installer, or
-  - [ ] MSIX.
-- [ ] Produce clean release build from the approved commit.
-- [ ] Generate checksums for release artifacts.
-- [ ] Verify artifact on a clean Windows environment.
-- [ ] Finalize README usage instructions for packaged builds.
-- [ ] Publish known limitations.
-- [ ] Add/update changelog.
-- [ ] Verify license files are included where required.
+- [x] Distribution format selected: WiX Toolset 4 x64 MSI plus portable x64 ZIP.
+- [x] Release workflow produces a clean locked release build before packaging.
+- [x] Release workflow generates SHA-256 checksums for MSI and portable ZIP.
+- [ ] Verify installer, upgrade, and uninstall on clean Windows 10 and Windows 11 environments.
+- [x] README and dedicated installation/releasing documentation describe packaged builds.
+- [x] UIPI and unsigned-build limitations are documented.
+- [x] `CHANGELOG.md` tracks the release candidate.
+- [x] Portable archive includes project and UI-SFX license/source notices.
+- [x] Release-PR workflow builds and structurally verifies the MSI plus portable ZIP contents.
 
 ## Final release gate
 
