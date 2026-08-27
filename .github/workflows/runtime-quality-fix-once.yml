@@ -1,0 +1,113 @@
+name: One-shot runtime quality fix
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - .github/workflows/runtime-quality-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout dev/master
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Fix runtime Clippy findings
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/runtime.rs")
+          text = path.read_text(encoding="utf-8")
+
+          replacements = [
+              (
+                  "use numflow_core::{Bindings, CoreEffect, InputAction, MotionConfig, MouseButton};",
+                  "use numflow_core::{Bindings, CoreEffect, MotionConfig, MouseButton};\n#[cfg(not(windows))]\nuse numflow_core::InputAction;",
+              ),
+              (
+                  "self.motion.press(direction)\n                    }",
+                  "self.motion.press(direction);\n                    }",
+              ),
+              (
+                  "worker_main(config, command_receiver, event_sender, ready_sender);",
+                  "worker_main(config, &command_receiver, &event_sender, &ready_sender);",
+              ),
+              (
+                  "command_receiver: Receiver<RuntimeCommand>,\n        event_sender: Sender<RuntimeEvent>,\n        ready_sender: mpsc::SyncSender<Result<(), String>>,
+",
+                  "command_receiver: &Receiver<RuntimeCommand>,\n        event_sender: &Sender<RuntimeEvent>,\n        ready_sender: &mpsc::SyncSender<Result<(), String>>,
+",
+              ),
+              (
+                  "let Some(normalized) = normalizer.process(event, &machine.bindings) else {",
+                  "let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {",
+              ),
+              (
+                  "match machine.handle_key_event(normalized) {",
+                  "match machine.handle_key_event(normalized_event) {",
+              ),
+              (
+                  "fail_safe(&mut machine, &hook, &mut normalizer, &event_sender, &error);",
+                  "fail_safe(&mut machine, &hook, &mut normalizer, event_sender, &error);",
+              ),
+              (
+                  "&mut normalizer,\n                            &event_sender,\n                            &error.to_string(),",
+                  "&mut normalizer,\n                            event_sender,\n                            &error.to_string(),",
+              ),
+              (
+                  "&mut normalizer,\n                    &event_sender,\n                    &error.to_string(),",
+                  "&mut normalizer,\n                    event_sender,\n                    &error.to_string(),",
+              ),
+              (
+                  "let spent = loop_started.elapsed();\n            if spent < MOTION_TICK {\n                thread::sleep(MOTION_TICK - spent);\n            }",
+                  "let spent = loop_started.elapsed();\n            if let Some(remaining) = MOTION_TICK.checked_sub(spent) {\n                thread::sleep(remaining);\n            }",
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit(f"Expected source fragment not found:\n{old}")
+              text = text.replace(old, new)
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Generate reproducible dependency lockfile
+        run: cargo generate-lockfile
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features
+
+      - name: Release build
+        run: cargo build --workspace --release --all-features
+
+      - name: Commit validated fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/runtime-quality-fix-once.yml
+          git add src/runtime.rs Cargo.lock
+          git commit -m "fix(runtime): resolve quality gate findings"
+          git push origin HEAD:dev/master
