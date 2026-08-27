@@ -34,16 +34,19 @@ use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
 const NUMFLOW_NUM_LOCK_INJECTION_TAG: usize = 0x4E46_4E4C;
+const NUM_LOCK_SCAN_CODE: u16 = 0x45;
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
 static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
-static NUM_LOCK_REPLAY_FALLBACK: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHookEvent {
     Key(PhysicalKeyEvent),
-    NumLockChanged { num_lock_on: bool },
+    NumLockChanged {
+        num_lock_on: bool,
+        sync_system: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -149,6 +152,14 @@ impl KeyboardHook {
         INTERCEPTION_ENABLED.store(should_intercept, Ordering::Release);
     }
 
+    /// Replays the already-intercepted physical Num Lock toggle after the low-level hook callback
+    /// has returned. Keeping input injection out of `keyboard_hook_proc` avoids re-entrant keyboard
+    /// state changes while Windows is still processing the physical key-down event.
+    #[must_use]
+    pub fn sync_num_lock_to_windows(&self) -> bool {
+        replay_num_lock_to_windows()
+    }
+
     pub fn emergency_disable(&self) {
         INTERCEPTION_ENABLED.store(false, Ordering::Release);
     }
@@ -208,7 +219,6 @@ fn hook_thread(
     let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
     NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
-    NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
 
     let module = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => module,
@@ -247,7 +257,6 @@ fn hook_thread(
 
     let loop_result = run_message_loop();
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
-    NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
     clear_dispatcher();
     let unhook_result = unsafe { UnhookWindowsHookEx(hook) };
 
@@ -338,19 +347,29 @@ fn observe_num_lock(state: KeyState) -> Option<bool> {
     NUM_LOCK_ON.store(next, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(next_key_down, Ordering::Release);
 
-    if changed == Some(true) {
-        // Num Lock ON means normal number entry. Stop interception in the hook immediately;
-        // the runtime will safely release any held pointer state as it consumes the mode event.
+    if changed == Some(false) {
+        // Num Lock OFF means pointer control. Start interception immediately in the hook so a
+        // NumPad key pressed directly after Num Lock cannot leak through before the runtime wakes.
+        INTERCEPTION_ENABLED.store(true, Ordering::Release);
+    } else if changed == Some(true) {
+        // Num Lock ON means normal number entry. Stop interception immediately; the runtime will
+        // release any held pointer state and then synchronize the Windows lock state.
         INTERCEPTION_ENABLED.store(false, Ordering::Release);
     }
 
     changed
 }
 
-fn dispatch_num_lock_change(state: KeyState) -> Option<bool> {
+fn dispatch_num_lock_change(state: KeyState, sync_system: bool) -> Option<bool> {
     let changed = observe_num_lock(state);
     if let Some(num_lock_on) = changed {
-        let _ = dispatch_event(KeyboardHookEvent::NumLockChanged { num_lock_on }, true);
+        let _ = dispatch_event(
+            KeyboardHookEvent::NumLockChanged {
+                num_lock_on,
+                sync_system,
+            },
+            true,
+        );
     }
     changed
 }
@@ -368,7 +387,7 @@ fn num_lock_keyboard_input(flags: KEYBD_EVENT_FLAGS) -> INPUT {
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VK_NUMLOCK,
-                wScan: 0,
+                wScan: NUM_LOCK_SCAN_CODE,
                 dwFlags: flags,
                 time: 0,
                 dwExtraInfo: NUMFLOW_NUM_LOCK_INJECTION_TAG,
@@ -390,24 +409,9 @@ fn is_numflow_num_lock_replay(keyboard: KBDLLHOOKSTRUCT) -> bool {
 }
 
 fn intercept_physical_num_lock(state: KeyState) -> bool {
-    let fallback = NUM_LOCK_REPLAY_FALLBACK.load(Ordering::Acquire);
-    let changed = dispatch_num_lock_change(state);
-
-    if fallback {
-        if state == KeyState::Released {
-            NUM_LOCK_REPLAY_FALLBACK.store(false, Ordering::Release);
-        }
-        return false;
-    }
-
-    if changed.is_some() && state == KeyState::Pressed && !replay_num_lock_to_windows() {
-        // If SendInput cannot replay the Num Lock press, pass this physical key sequence through
-        // until release. That keeps Windows' toggle state and LED synchronized instead of leaving
-        // NumFlow and the OS in different modes.
-        NUM_LOCK_REPLAY_FALLBACK.store(true, Ordering::Release);
-        return false;
-    }
-
+    // Always consume the physical Num Lock sequence. The runtime performs the tagged Windows
+    // replay after this low-level hook callback returns, avoiding re-entrant SendInput here.
+    let _ = dispatch_num_lock_change(state, true);
     true
 }
 
@@ -430,7 +434,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 if keyboard.flags.0 & LLKHF_INJECTED.0 != 0 {
                     // Respect Num Lock changes injected by other software and mirror them into
                     // NumFlow state, but do not consume somebody else's injected input.
-                    let _ = dispatch_num_lock_change(state);
+                    let _ = dispatch_num_lock_change(state, false);
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
 
@@ -468,7 +472,10 @@ mod tests {
         INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
     };
 
-    use super::{NUMFLOW_NUM_LOCK_INJECTION_TAG, num_lock_replay_inputs, num_lock_transition};
+    use super::{
+        NUM_LOCK_SCAN_CODE, NUMFLOW_NUM_LOCK_INJECTION_TAG, num_lock_replay_inputs,
+        num_lock_transition,
+    };
     use crate::KeyState;
 
     #[test]
@@ -505,6 +512,8 @@ mod tests {
 
         assert_eq!(down.wVk, VK_NUMLOCK);
         assert_eq!(up.wVk, VK_NUMLOCK);
+        assert_eq!(down.wScan, NUM_LOCK_SCAN_CODE);
+        assert_eq!(up.wScan, NUM_LOCK_SCAN_CODE);
         assert_eq!(down.dwFlags, KEYEVENTF_EXTENDEDKEY);
         assert_eq!(up.dwFlags, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP);
         assert_eq!(down.dwExtraInfo, NUMFLOW_NUM_LOCK_INJECTION_TAG);

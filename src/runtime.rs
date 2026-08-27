@@ -531,7 +531,10 @@ mod platform {
         };
 
         let event = match event {
-            KeyboardHookEvent::NumLockChanged { num_lock_on } => {
+            KeyboardHookEvent::NumLockChanged {
+                num_lock_on,
+                sync_system,
+            } => {
                 normalizer.reset();
                 if let Some(audio_feedback) = audio_feedback {
                     audio_feedback.play(if num_lock_on {
@@ -543,6 +546,12 @@ mod platform {
 
                 match apply_num_lock_mode(machine, num_lock_on) {
                     Ok(effects) => {
+                        if sync_system && !hook.sync_num_lock_to_windows() {
+                            tracing::warn!(
+                                num_lock_on,
+                                "failed to replay intercepted Num Lock toggle to Windows"
+                            );
+                        }
                         hook.set_interception_enabled(machine.enabled());
                         event_sink.send(RuntimeEvent::Effects {
                             state: machine.snapshot(),
