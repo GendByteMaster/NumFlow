@@ -1,0 +1,56 @@
+name: One-shot Num Lock mode + audio
+
+on:
+  push:
+    branches:
+      - dev/master
+    paths:
+      - scripts/_numlock_audio_patch.py
+      - .github/workflows/numlock-audio-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout dev/master
+        uses: actions/checkout@v6
+        with:
+          ref: dev/master
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply Num Lock mode patch
+        run: python scripts/_numlock_audio_patch.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Formatting check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Release build
+        run: cargo build --locked --workspace --release --all-features
+
+      - name: Commit validated Num Lock mode
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/workflows/numlock-audio-once.yml scripts/_numlock_audio_patch.py
+          git add crates/numflow-windows/src/hook.rs crates/numflow-windows/src/audio.rs crates/numflow-windows/src/lib.rs src/runtime.rs src/bindings_ui.rs ui/app.slint ui/tray.slint
+          if (git diff --cached --quiet) { throw "No validated source changes to commit" }
+          git commit -m "feat(input): use Num Lock as NumFlow mode switch"
+          git push origin HEAD:dev/master
