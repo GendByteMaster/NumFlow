@@ -50,6 +50,14 @@ jobs:
           $audioText = $audioText.Replace("        assert!(CUE_DURATION_MS < 1_000);`n", "")
           Set-Content $audioPath $audioText -NoNewline
 
+          $runtimePath = "src/runtime.rs"
+          $runtimeText = Get-Content $runtimePath -Raw
+          $runtimeText = $runtimeText.Replace(
+            "PointerBackend, PointerEffect, StateChange,",
+            "PointerBackend, PointerEffect,"
+          )
+          Set-Content $runtimePath $runtimeText -NoNewline
+
       - name: Format
         run: cargo fmt --all
 
