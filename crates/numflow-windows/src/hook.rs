@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use windows::{
     Win32::{
         Foundation::{
-            ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, LPARAM, LRESULT, WPARAM, WIN32_ERROR,
+            ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, LPARAM, LRESULT, WIN32_ERROR, WPARAM,
         },
         System::{
             LibraryLoader::GetModuleHandleW,
@@ -34,10 +34,10 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CallNextHookEx, DEVICE_NOTIFY_CALLBACK, GetMessageW, HHOOK, KBDLLHOOKSTRUCT,
-                LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PBT_APMRESUMEAUTOMATIC,
-                PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_NOREMOVE,
-                PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-                WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
+                PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_NOREMOVE, PeekMessageW,
+                PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
+                WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
             },
         },
     },
@@ -376,14 +376,7 @@ fn hook_thread(
 }
 
 fn install_keyboard_hook(module: HINSTANCE) -> Result<HHOOK, WindowsError> {
-    unsafe {
-        SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(keyboard_hook_proc),
-            Some(module),
-            0,
-        )
-    }
+    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), Some(module), 0) }
 }
 
 fn register_suspend_resume_notifications() -> Result<HPOWERNOTIFY, HookError> {
@@ -391,11 +384,7 @@ fn register_suspend_resume_notifications() -> Result<HPOWERNOTIFY, HookError> {
         Callback: Some(power_notification_callback),
         Context: std::ptr::null_mut(),
     };
-    let recipient = HANDLE(
-        std::ptr::from_ref(&parameters)
-            .cast::<c_void>()
-            .cast_mut(),
-    );
+    let recipient = HANDLE(std::ptr::from_ref(&parameters).cast::<c_void>().cast_mut());
 
     unsafe { RegisterSuspendResumeNotification(recipient, DEVICE_NOTIFY_CALLBACK) }
         .map_err(HookError::PowerNotification)
@@ -434,8 +423,7 @@ fn restore_keyboard_hook(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<
 
 fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), HookError> {
     let mut message = MSG::default();
-    let mut automatic_resume_seen = false;
-    let mut hook_restored = true;
+    let mut automatic_resume_result = None;
 
     loop {
         let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
@@ -447,22 +435,20 @@ fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), H
 
         match message.message {
             WM_NUMFLOW_SUSPEND => {
-                automatic_resume_seen = false;
-                hook_restored = true;
+                automatic_resume_result = None;
                 handle_suspend_notification();
             }
             WM_NUMFLOW_RESUME_AUTOMATIC => {
-                automatic_resume_seen = true;
-                hook_restored = handle_resume_notification(module, hook);
+                automatic_resume_result = Some(handle_resume_notification(module, hook));
             }
             WM_NUMFLOW_RESUME_USER => {
                 // Windows normally emits RESUMEAUTOMATIC first and RESUMESUSPEND when the user
                 // becomes active. Use the latter as an event-driven retry if re-arming failed, and
                 // always reconcile winit Raw Input once more after the interactive session returns.
-                if automatic_resume_seen && hook_restored {
+                if automatic_resume_result == Some(true) {
                     reconcile_raw_keyboard_after_resume();
                 } else {
-                    hook_restored = handle_resume_notification(module, hook);
+                    automatic_resume_result = Some(handle_resume_notification(module, hook));
                 }
             }
             _ => {}
