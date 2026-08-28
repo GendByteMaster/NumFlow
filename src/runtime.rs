@@ -120,8 +120,8 @@ mod platform {
         NumpadKey, PointerBackend, PointerEffect,
     };
     use numflow_windows::{
-        AudioCue, AudioFeedbackService, KeyState, KeyboardEventNormalizer, KeyboardHook,
-        KeyboardHookEvent, NormalizedKeyEvent, WindowsPointer,
+        AudioCue, AudioFeedbackService, InputResyncReason, KeyState, KeyboardEventNormalizer,
+        KeyboardHook, KeyboardHookEvent, NormalizedKeyEvent, WindowsPointer,
     };
 
     use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot, UiSoundCue};
@@ -142,6 +142,7 @@ mod platform {
         SetSoundsEnabled(bool),
         SetSoundVolume(u8),
         PlaySound(UiSoundCue),
+        ResyncInput,
         Shutdown,
     }
 
@@ -251,6 +252,10 @@ mod platform {
 
         pub fn play_sound(&self, cue: UiSoundCue) -> Result<(), RuntimeError> {
             self.send(RuntimeCommand::PlaySound(cue))
+        }
+
+        pub fn resync_input_state(&self) -> Result<(), RuntimeError> {
+            self.send(RuntimeCommand::ResyncInput)
         }
 
         #[must_use]
@@ -670,6 +675,18 @@ mod platform {
                 hook.emergency_disable();
                 false
             }
+            Ok(RuntimeCommand::ResyncInput) => {
+                if !hook.resync_input_state(InputResyncReason::Startup) {
+                    fail_safe(
+                        machine,
+                        hook,
+                        normalizer,
+                        event_sink,
+                        "failed to queue input runtime resynchronization",
+                    );
+                }
+                true
+            }
             Ok(command) => {
                 if let Err(error) =
                     apply_command(command, machine, hook, normalizer, audio_feedback)
@@ -706,6 +723,16 @@ mod platform {
         };
 
         let event = match event {
+            KeyboardHookEvent::InputUnavailable { reason } => {
+                fail_safe(
+                    machine,
+                    hook,
+                    normalizer,
+                    event_sink,
+                    &format!("input runtime unavailable (reason={})", reason.label()),
+                );
+                return true;
+            }
             KeyboardHookEvent::NumLockChanged {
                 num_lock_on,
                 sync_system,
@@ -722,11 +749,22 @@ mod platform {
 
                 match apply_num_lock_mode(machine, num_lock_on) {
                     Ok(effects) => {
+                        tracing::debug!(
+                            num_lock_on,
+                            numflow_enabled = !num_lock_on,
+                            "NumFlow NumLock state applied from input runtime"
+                        );
                         if sync_system && !hook.sync_num_lock_to_windows() {
-                            tracing::warn!(
-                                num_lock_on,
-                                "failed to replay intercepted Num Lock toggle to Windows"
+                            fail_safe(
+                                machine,
+                                hook,
+                                normalizer,
+                                event_sink,
+                                &format!(
+                                    "failed to replay Num Lock state to Windows (num_lock_on={num_lock_on})"
+                                ),
                             );
+                            return true;
                         }
                         hook.set_interception_enabled(machine.enabled());
                         event_sink.send(RuntimeEvent::Effects {
@@ -740,7 +778,10 @@ mod platform {
                 }
                 return true;
             }
-            KeyboardHookEvent::Key(event) => event,
+            KeyboardHookEvent::Key(event) => {
+                hook.record_runtime_numpad_event();
+                event
+            }
         };
 
         let Some(normalized_event) = normalizer.process(event, &machine.bindings) else {
@@ -846,6 +887,9 @@ mod platform {
                         UiSoundCue::Error => AudioCue::Error,
                     });
                 }
+            }
+            RuntimeCommand::ResyncInput => {
+                unreachable!("input resynchronization is handled by the worker loop")
             }
             RuntimeCommand::Shutdown => unreachable!("shutdown is handled by the worker loop"),
         }
@@ -1344,6 +1388,14 @@ impl BackgroundRuntime {
     }
 
     pub fn set_sounds_enabled(&self, _enabled: bool) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn set_sound_volume(&self, _volume_percent: u8) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    pub fn resync_input_state(&self) -> Result<(), RuntimeError> {
         Ok(())
     }
 

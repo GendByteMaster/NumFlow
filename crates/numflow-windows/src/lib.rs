@@ -9,6 +9,10 @@ mod accessibility;
 #[cfg(windows)]
 mod audio;
 #[cfg(windows)]
+mod diagnostics;
+#[cfg(windows)]
+mod elevation;
+#[cfg(windows)]
 mod hook;
 #[cfg(windows)]
 mod hud;
@@ -24,8 +28,16 @@ pub use accessibility::client_area_animations_enabled;
 #[cfg(windows)]
 pub use audio::{AudioCue, AudioFeedbackError, AudioFeedbackService};
 #[cfg(windows)]
+pub use diagnostics::{
+    ForegroundProcessInfo, current_process_elevated, foreground_process_info,
+    foreground_process_info_for_window,
+};
+#[cfg(windows)]
+pub use elevation::{ElevationError, relaunch_elevated};
+#[cfg(windows)]
 pub use hook::{
-    HookError, KeyboardHook, KeyboardHookEvent, remove_raw_keyboard_device_event_registration,
+    HookError, InputResyncReason, InputRuntimeState, KeyboardHook, KeyboardHookEvent,
+    disable_winit_raw_keyboard_registration,
 };
 #[cfg(windows)]
 pub use hud::{HudPosition, configure_hud_native_window, recommended_hud_position};

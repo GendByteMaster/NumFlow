@@ -4,7 +4,7 @@ use std::{
     mem::size_of,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -13,6 +13,7 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use windows::{
     Win32::{
+        Devices::HumanInterfaceDevice::GUID_DEVINTERFACE_KEYBOARD,
         Foundation::{
             ERROR_CLASS_ALREADY_EXISTS, ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, HWND, LPARAM,
             LRESULT, WIN32_ERROR, WPARAM,
@@ -27,25 +28,32 @@ use windows::{
                 NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
                 WTSUnRegisterSessionNotification,
             },
-            Threading::GetCurrentThreadId,
+            Threading::{GetCurrentProcessId, GetCurrentThreadId},
         },
         UI::{
+            Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
             Input::{
+                GetRawInputDeviceList,
                 KeyboardAndMouse::{
                     GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
                     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, SendInput, VK_NUMLOCK,
                 },
-                RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices,
+                RAWINPUTDEVICE, RAWINPUTDEVICELIST, RIDEV_REMOVE, RIM_TYPEKEYBOARD,
+                RegisterRawInputDevices,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, CreateWindowExW, DEVICE_NOTIFY_CALLBACK, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, GetMessageW, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT,
-                LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
-                PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_NOREMOVE, PeekMessageW,
-                PostThreadMessageW, RegisterClassW, SetWindowsHookExW, UnhookWindowsHookEx,
-                WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_KEYDOWN, WM_KEYUP,
-                WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_WTSSESSION_CHANGE, WNDCLASSW,
-                WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+                CallNextHookEx, CreateWindowExW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+                DBT_DEVTYP_DEVICEINTERFACE, DEV_BROADCAST_DEVICEINTERFACE_W,
+                DEVICE_NOTIFY_CALLBACK, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow,
+                DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GIDC_ARRIVAL, GIDC_REMOVAL, GetMessageW,
+                HDEVNOTIFY, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED,
+                MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND,
+                PBT_APMSUSPEND, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, RegisterClassW,
+                RegisterDeviceNotificationW, SetWindowsHookExW, UnhookWindowsHookEx,
+                UnregisterDeviceNotification, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
+                WINEVENT_OUTOFCONTEXT, WM_APP, WM_DEVICECHANGE, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
+                WM_SYSKEYDOWN, WM_SYSKEYUP, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
+                WTS_SESSION_UNLOCK,
             },
         },
     },
@@ -65,6 +73,9 @@ const WM_NUMFLOW_RESUME_AUTOMATIC: u32 = WM_APP + 0x4E2;
 const WM_NUMFLOW_RESUME_USER: u32 = WM_APP + 0x4E3;
 const WM_NUMFLOW_SESSION_UNLOCK: u32 = WM_APP + 0x4E4;
 const WM_NUMFLOW_DESKTOP_READY: u32 = WM_APP + 0x4E5;
+const WM_NUMFLOW_FOREGROUND_CHANGED: u32 = WM_APP + 0x4E6;
+const WM_NUMFLOW_KEYBOARD_DEVICE_CHANGED: u32 = WM_APP + 0x4E7;
+const WM_NUMFLOW_INPUT_RESYNC: u32 = WM_APP + 0x4E8;
 const WTS_SESSION_DESKTOP_READY_REASON: u32 = 0x0F;
 const RESUME_STAGE_IDLE: u32 = 0;
 const RESUME_STAGE_AUTOMATIC: u32 = 1;
@@ -72,8 +83,12 @@ const RESUME_STAGE_USER: u32 = 2;
 const SESSION_STAGE_IDLE: u32 = 0;
 const SESSION_STAGE_UNLOCK: u32 = 1;
 const SESSION_STAGE_DESKTOP_READY: u32 = 2;
+const INPUT_RUNTIME_RUNNING: u32 = 0;
+const INPUT_RUNTIME_SUSPENDED: u32 = 1;
+const INPUT_RUNTIME_RECOVERING: u32 = 2;
 
 static POWER_NOTIFICATION_ORDER: Mutex<()> = Mutex::new(());
+static NUM_LOCK_STATE_ORDER: Mutex<()> = Mutex::new(());
 static POWER_RESUME_STAGE: AtomicU32 = AtomicU32::new(RESUME_STAGE_IDLE);
 static SESSION_RESUME_STAGE: AtomicU32 = AtomicU32::new(SESSION_STAGE_IDLE);
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
@@ -85,6 +100,15 @@ static SESSION_LOCK_PENDING: AtomicBool = AtomicBool::new(false);
 static RESUME_WINDOWS_NUM_LOCK_MISMATCH: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static HOOK_GENERATION: AtomicU32 = AtomicU32::new(0);
+static INPUT_RUNTIME_STATE: AtomicU32 = AtomicU32::new(INPUT_RUNTIME_RECOVERING);
+static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static KEYBOARD_DEVICE_NOTIFICATIONS_REGISTERED: AtomicBool = AtomicBool::new(false);
+static WINIT_RAW_KEYBOARD_REGISTRATION_DISABLED: AtomicBool = AtomicBool::new(false);
+static HOOK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static HOOK_NUMPAD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static HOOK_NUMPAD_DISPATCHED_COUNT: AtomicU64 = AtomicU64::new(0);
+static HOOK_NUMPAD_DROPPED_COUNT: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_NUMPAD_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHookEvent {
@@ -94,6 +118,85 @@ pub enum KeyboardHookEvent {
         sync_system: bool,
         play_feedback: bool,
     },
+    InputUnavailable {
+        reason: InputResyncReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputRuntimeState {
+    Running,
+    Suspended,
+    Recovering,
+}
+
+impl InputRuntimeState {
+    fn from_raw(value: u32) -> Self {
+        match value {
+            INPUT_RUNTIME_RUNNING => Self::Running,
+            INPUT_RUNTIME_SUSPENDED => Self::Suspended,
+            _ => Self::Recovering,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputResyncReason {
+    Startup,
+    ResumeAutomatic,
+    ResumeUser,
+    SessionUnlock,
+    DesktopReady,
+    ForegroundChanged,
+    KeyboardDeviceChanged,
+    HookFailure,
+    NumLockChanged,
+}
+
+impl InputResyncReason {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::ResumeAutomatic => "resume-automatic",
+            Self::ResumeUser => "resume-user",
+            Self::SessionUnlock => "session-unlock",
+            Self::DesktopReady => "desktop-ready",
+            Self::ForegroundChanged => "foreground-changed",
+            Self::KeyboardDeviceChanged => "keyboard-device-changed",
+            Self::HookFailure => "hook-failure",
+            Self::NumLockChanged => "numlock-changed",
+        }
+    }
+
+    const fn code(self) -> usize {
+        match self {
+            Self::Startup => 1,
+            Self::ResumeAutomatic => 2,
+            Self::ResumeUser => 3,
+            Self::SessionUnlock => 4,
+            Self::DesktopReady => 5,
+            Self::ForegroundChanged => 6,
+            Self::KeyboardDeviceChanged => 7,
+            Self::HookFailure => 8,
+            Self::NumLockChanged => 9,
+        }
+    }
+
+    const fn from_code(code: usize) -> Option<Self> {
+        Some(match code {
+            1 => Self::Startup,
+            2 => Self::ResumeAutomatic,
+            3 => Self::ResumeUser,
+            4 => Self::SessionUnlock,
+            5 => Self::DesktopReady,
+            6 => Self::ForegroundChanged,
+            7 => Self::KeyboardDeviceChanged,
+            8 => Self::HookFailure,
+            9 => Self::NumLockChanged,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -122,6 +225,16 @@ pub enum HookError {
     ThreadPanicked,
 }
 
+fn keyboard_device_notification_filter() -> DEV_BROADCAST_DEVICEINTERFACE_W {
+    DEV_BROADCAST_DEVICEINTERFACE_W {
+        dbcc_size: u32::try_from(size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>())
+            .expect("device-notification filter size must fit in a Win32 DWORD"),
+        dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+        dbcc_classguid: GUID_DEVINTERFACE_KEYBOARD,
+        ..DEV_BROADCAST_DEVICEINTERFACE_W::default()
+    }
+}
+
 fn raw_keyboard_removal_device() -> RAWINPUTDEVICE {
     RAWINPUTDEVICE {
         usUsagePage: HID_USAGE_PAGE_GENERIC,
@@ -131,32 +244,37 @@ fn raw_keyboard_removal_device() -> RAWINPUTDEVICE {
     }
 }
 
-/// Removes the process-wide raw-keyboard device-event registration installed by winit.
+/// Removes winit's process-wide raw-keyboard registration after Slint creates its event loop.
 ///
-/// Winit registers keyboards for raw `DeviceEvent` delivery on Windows. Windows can then stop
-/// dispatching this process's `WH_KEYBOARD_LL` hook while one of the same process's windows owns
-/// foreground focus. `NumFlow` does not consume winit raw `DeviceEvent::Key` events; Slint's normal
-/// window keyboard handling continues through `WM_KEYDOWN` / `WM_KEYUP`. Removing only the raw
-/// keyboard registration therefore keeps the UI keyboard-accessible while restoring `NumFlow`'s
-/// global low-level hook inside its own focused settings window. Raw mouse registration is left
-/// untouched.
+/// `NumFlow` receives global `NumPad` input exclusively through `WH_KEYBOARD_LL`. Keeping winit's
+/// keyboard Raw Input registration makes delivery of that low-level hook foreground-dependent
+/// when a `NumFlow` window owns focus. Normal Slint text/key input continues through window messages;
+/// mouse Raw Input registration is not changed. Keyboard hotplug is observed independently through
+/// `RegisterDeviceNotificationW`, so this registration is never recreated by recovery.
 ///
-/// This function is intentionally idempotent and should run after Slint/winit has initialized its
-/// event loop. It is also safe to repeat after Windows resumes from sleep or hibernation.
+/// The operation is process-wide and idempotent.
 ///
 /// # Errors
 ///
-/// Returns the Win32 error from `RegisterRawInputDevices` if Windows rejects the removal request.
+/// Returns the Win32 error when the keyboard Raw Input registration cannot be removed.
 ///
 /// # Panics
 ///
 /// Panics only if the compile-time `RAWINPUTDEVICE` size cannot fit in a Win32 `UINT`.
-pub fn remove_raw_keyboard_device_event_registration() -> Result<(), WindowsError> {
+pub fn disable_winit_raw_keyboard_registration() -> Result<(), WindowsError> {
+    if WINIT_RAW_KEYBOARD_REGISTRATION_DISABLED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+
     let device = raw_keyboard_removal_device();
     let device_size = u32::try_from(size_of::<RAWINPUTDEVICE>())
         .expect("RAWINPUTDEVICE size must fit in a Win32 UINT");
-
-    unsafe { RegisterRawInputDevices(&[device], device_size) }
+    unsafe { RegisterRawInputDevices(&[device], device_size) }?;
+    WINIT_RAW_KEYBOARD_REGISTRATION_DISABLED.store(true, Ordering::Release);
+    eprintln!(
+        "NumFlow: winit raw keyboard registration disabled; WH_KEYBOARD_LL owns global NumPad input"
+    );
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -234,6 +352,42 @@ impl KeyboardHook {
         NUM_LOCK_ON.load(Ordering::Acquire)
     }
 
+    #[must_use]
+    pub fn input_runtime_state(&self) -> InputRuntimeState {
+        InputRuntimeState::from_raw(INPUT_RUNTIME_STATE.load(Ordering::Acquire))
+    }
+
+    #[must_use]
+    pub fn hook_alive(&self) -> bool {
+        HOOK_INSTALLED.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn hook_event_count(&self) -> u64 {
+        HOOK_EVENT_COUNT.load(Ordering::Acquire)
+    }
+
+    pub fn record_runtime_numpad_event(&self) {
+        RUNTIME_NUMPAD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Asks the hook thread to verify its input lifecycle state and low-level keyboard hook.
+    ///
+    /// The request is posted to the existing message loop; it never installs a hook from the
+    /// runtime worker and therefore cannot race the hook thread's retire-before-install ordering.
+    #[must_use]
+    pub fn resync_input_state(&self, reason: InputResyncReason) -> bool {
+        unsafe {
+            PostThreadMessageW(
+                self.thread_id,
+                WM_NUMFLOW_INPUT_RESYNC,
+                WPARAM(reason.code()),
+                LPARAM(0),
+            )
+            .is_ok()
+        }
+    }
+
     /// Synchronizes the tracked and Windows Num Lock state with an explicit runtime request.
     ///
     /// A tagged `SendInput` toggle is emitted only when the requested state differs from the
@@ -248,6 +402,9 @@ impl KeyboardHook {
     /// Panics only if compile-time Win32 input structure sizes cannot fit their API integer types.
     #[must_use]
     pub fn set_num_lock_on(&self, num_lock_on: bool) -> bool {
+        let Ok(_state_guard) = NUM_LOCK_STATE_ORDER.lock() else {
+            return false;
+        };
         let current = self.num_lock_on();
         if current == num_lock_on {
             self.set_interception_enabled(!num_lock_on);
@@ -278,6 +435,9 @@ impl KeyboardHook {
     /// state changes while Windows is still processing the physical key-down event.
     #[must_use]
     pub fn sync_num_lock_to_windows(&self) -> bool {
+        let Ok(_state_guard) = NUM_LOCK_STATE_ORDER.lock() else {
+            return false;
+        };
         replay_num_lock_to_windows()
     }
 
@@ -340,10 +500,6 @@ fn hook_thread(
     // worker.
     let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
 
-    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
-    NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
-    NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
-
     let module = match unsafe { GetModuleHandleW(None) } {
         Ok(module) => HINSTANCE(module.0),
         Err(error) => {
@@ -352,19 +508,21 @@ fn hook_thread(
         }
     };
 
+    if !register_dispatcher(event_sender, event_overflow_reader) {
+        let _ = ready_sender.send(Err(HookError::AlreadyActive));
+        return Ok(());
+    }
+
+    initialize_num_lock_state();
+
     let mut hook = match install_keyboard_hook(module) {
         Ok(hook) => Some(hook),
         Err(error) => {
+            clear_dispatcher();
             let _ = ready_sender.send(Err(HookError::Install(error)));
             return Ok(());
         }
     };
-
-    if !register_dispatcher(event_sender, event_overflow_reader) {
-        let _ = retire_keyboard_hook(&mut hook);
-        let _ = ready_sender.send(Err(HookError::AlreadyActive));
-        return Ok(());
-    }
 
     HOOK_THREAD_ID.store(thread_id, Ordering::Release);
     POWER_RESUME_STAGE.store(RESUME_STAGE_IDLE, Ordering::Release);
@@ -380,37 +538,62 @@ fn hook_thread(
         }
     };
 
-    let session_window = match create_session_notification_window(module) {
+    let (session_window, keyboard_device_notification) = match create_session_notification_window(
+        module,
+    ) {
         Ok(hwnd) => {
             eprintln!("NumFlow: session lifecycle window registered");
-            Some(hwnd)
+            let notification = match register_keyboard_device_notifications(hwnd) {
+                Ok(notification) => Some(notification),
+                Err(error) => {
+                    eprintln!("NumFlow: keyboard device notifications unavailable: {error}");
+                    None
+                }
+            };
+            (Some(hwnd), notification)
         }
         Err(error) => {
             eprintln!(
                 "NumFlow: session lifecycle notifications unavailable; using power-only recovery: {error}"
             );
+            (None, None)
+        }
+    };
+
+    let foreground_hook = match register_foreground_notifications() {
+        Ok(hook) => {
+            eprintln!("NumFlow: foreground change notifications registered");
+            Some(hook)
+        }
+        Err(error) => {
+            eprintln!("NumFlow: foreground change notifications unavailable: {error}");
             None
         }
     };
 
     if ready_sender.send(Ok(thread_id)).is_err() {
         HOOK_THREAD_ID.store(0, Ordering::Release);
+        cleanup_keyboard_device_notifications(keyboard_device_notification);
         if let Some(hwnd) = session_window {
             cleanup_session_notification_window(hwnd);
         }
+        cleanup_foreground_notifications(foreground_hook);
         let _ = unsafe { UnregisterSuspendResumeNotification(power_registration) };
         clear_dispatcher();
         let _ = retire_keyboard_hook(&mut hook);
         return Ok(());
     }
 
-    let loop_result = run_message_loop(module, &mut hook);
+    INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RUNNING, Ordering::Release);
+    let loop_result = run_message_loop(module, &mut hook, session_window);
 
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     HOOK_THREAD_ID.store(0, Ordering::Release);
+    cleanup_keyboard_device_notifications(keyboard_device_notification);
     if let Some(hwnd) = session_window {
         cleanup_session_notification_window(hwnd);
     }
+    cleanup_foreground_notifications(foreground_hook);
     let power_result = unsafe { UnregisterSuspendResumeNotification(power_registration) };
     clear_dispatcher();
     let unhook_result = retire_keyboard_hook(&mut hook);
@@ -420,9 +603,22 @@ fn hook_thread(
     unhook_result.map_err(HookError::Stop)
 }
 
+fn initialize_num_lock_state() {
+    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
+    NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
+    NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
+    eprintln!(
+        "NumFlow: startup VK_NUMLOCK snapshot = {}; num_lock_on = {}; numflow_enabled = {}",
+        key_state & 1 != 0,
+        key_state & 1 != 0,
+        key_state & 1 == 0
+    );
+}
+
 fn install_keyboard_hook(module: HINSTANCE) -> Result<HHOOK, WindowsError> {
     let hook =
         unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), Some(module), 0) }?;
+    HOOK_INSTALLED.store(true, Ordering::Release);
     HOOK_GENERATION.fetch_add(1, Ordering::AcqRel);
     Ok(hook)
 }
@@ -484,6 +680,127 @@ fn create_session_notification_window(module: HINSTANCE) -> Result<HWND, Windows
     Ok(hwnd)
 }
 
+fn register_keyboard_device_notifications(target: HWND) -> Result<HDEVNOTIFY, WindowsError> {
+    let filter = keyboard_device_notification_filter();
+    let recipient = HANDLE(target.0);
+    let notification = unsafe {
+        RegisterDeviceNotificationW(
+            recipient,
+            std::ptr::from_ref(&filter).cast::<c_void>(),
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        )
+    }?;
+    KEYBOARD_DEVICE_NOTIFICATIONS_REGISTERED.store(true, Ordering::Release);
+    eprintln!(
+        "NumFlow: keyboard device notifications registered (source=WM_DEVICECHANGE, attached_keyboards={:?})",
+        attached_raw_keyboard_count()
+    );
+    Ok(notification)
+}
+
+fn cleanup_keyboard_device_notifications(notification: Option<HDEVNOTIFY>) {
+    if let Some(notification) = notification
+        && let Err(error) = unsafe { UnregisterDeviceNotification(notification) }
+    {
+        eprintln!("NumFlow: failed to unregister keyboard device notifications: {error}");
+    }
+    KEYBOARD_DEVICE_NOTIFICATIONS_REGISTERED.store(false, Ordering::Release);
+}
+
+fn attached_raw_keyboard_count() -> Option<u32> {
+    let device_size = u32::try_from(size_of::<RAWINPUTDEVICELIST>())
+        .expect("RAWINPUTDEVICELIST size must fit in a Win32 UINT");
+    let mut count = 0;
+    let required = unsafe { GetRawInputDeviceList(None, &raw mut count, device_size) };
+    if required == u32::MAX {
+        return None;
+    }
+    let capacity = usize::try_from(count).ok()?;
+    let mut devices = vec![RAWINPUTDEVICELIST::default(); capacity];
+    let returned =
+        unsafe { GetRawInputDeviceList(Some(devices.as_mut_ptr()), &raw mut count, device_size) };
+    if returned == u32::MAX {
+        return None;
+    }
+    devices
+        .iter()
+        .filter(|device| device.dwType == RIM_TYPEKEYBOARD)
+        .count()
+        .try_into()
+        .ok()
+}
+
+fn register_foreground_notifications() -> Result<HWINEVENTHOOK, WindowsError> {
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if hook.is_invalid() {
+        Err(WindowsError::from_thread())
+    } else {
+        Ok(hook)
+    }
+}
+
+fn cleanup_foreground_notifications(hook: Option<HWINEVENTHOOK>) {
+    if let Some(hook) = hook
+        && unsafe { !UnhookWinEvent(hook).as_bool() }
+    {
+        eprintln!("NumFlow: failed to unregister foreground change notifications");
+    }
+}
+
+unsafe extern "system" fn foreground_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event == EVENT_SYSTEM_FOREGROUND {
+        queue_foreground_notification(hwnd);
+    }
+}
+
+fn queue_foreground_notification(hwnd: HWND) {
+    let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
+    if thread_id == 0 {
+        return;
+    }
+    let _ = unsafe {
+        PostThreadMessageW(
+            thread_id,
+            WM_NUMFLOW_FOREGROUND_CHANGED,
+            WPARAM(0),
+            LPARAM(hwnd.0 as isize),
+        )
+    };
+}
+
+fn queue_keyboard_device_notification(reason: u32) {
+    let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
+    if thread_id == 0 {
+        return;
+    }
+    let _ = unsafe {
+        PostThreadMessageW(
+            thread_id,
+            WM_NUMFLOW_KEYBOARD_DEVICE_CHANGED,
+            WPARAM(reason as usize),
+            LPARAM(0),
+        )
+    };
+}
+
 fn cleanup_session_notification_window(hwnd: HWND) {
     if let Err(error) = unsafe { WTSUnRegisterSessionNotification(hwnd) } {
         eprintln!("NumFlow: failed to unregister session lifecycle notifications: {error}");
@@ -506,6 +823,17 @@ unsafe extern "system" fn session_window_proc(
         return LRESULT(0);
     }
 
+    if message == WM_DEVICECHANGE {
+        if let Ok(reason) = u32::try_from(wparam.0) {
+            match reason {
+                DBT_DEVICEARRIVAL => queue_keyboard_device_notification(GIDC_ARRIVAL),
+                DBT_DEVICEREMOVECOMPLETE => queue_keyboard_device_notification(GIDC_REMOVAL),
+                _ => {}
+            }
+        }
+        return LRESULT(0);
+    }
+
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
@@ -517,10 +845,12 @@ fn retire_keyboard_hook(hook: &mut Option<HHOOK>) -> Result<(), WindowsError> {
     match unsafe { UnhookWindowsHookEx(active_hook) } {
         Ok(()) => {
             *hook = None;
+            HOOK_INSTALLED.store(false, Ordering::Release);
             Ok(())
         }
         Err(error) if hook_is_already_gone(&error) => {
             *hook = None;
+            HOOK_INSTALLED.store(false, Ordering::Release);
             Ok(())
         }
         Err(error) => Err(error),
@@ -559,7 +889,11 @@ impl ResumePhase {
     }
 }
 
-fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), HookError> {
+fn run_message_loop(
+    module: HINSTANCE,
+    hook: &mut Option<HHOOK>,
+    session_window: Option<HWND>,
+) -> Result<(), HookError> {
     let mut message = MSG::default();
 
     loop {
@@ -573,18 +907,56 @@ fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), H
         match message.message {
             WM_NUMFLOW_SUSPEND => handle_suspend_notification(),
             WM_NUMFLOW_RESUME_AUTOMATIC => {
-                let _ = handle_resume_notification(module, hook, ResumePhase::Automatic);
+                let _ = handle_resume_notification(
+                    module,
+                    hook,
+                    session_window,
+                    ResumePhase::Automatic,
+                );
             }
             WM_NUMFLOW_RESUME_USER => {
                 // PBT_APMRESUMESUSPEND is the late/user-visible power phase. Re-arm here, then let
                 // WTS session notifications provide an even later desktop/session recovery point.
-                let _ = handle_resume_notification(module, hook, ResumePhase::User);
+                let _ = handle_resume_notification(module, hook, session_window, ResumePhase::User);
             }
             WM_NUMFLOW_SESSION_UNLOCK => {
-                let _ = handle_resume_notification(module, hook, ResumePhase::SessionUnlock);
+                let _ = handle_resume_notification(
+                    module,
+                    hook,
+                    session_window,
+                    ResumePhase::SessionUnlock,
+                );
             }
             WM_NUMFLOW_DESKTOP_READY => {
-                let _ = handle_resume_notification(module, hook, ResumePhase::DesktopReady);
+                let _ = handle_resume_notification(
+                    module,
+                    hook,
+                    session_window,
+                    ResumePhase::DesktopReady,
+                );
+            }
+            WM_NUMFLOW_FOREGROUND_CHANGED => {
+                let hwnd = HWND(message.lParam.0 as *mut _);
+                handle_foreground_notification(module, hook, session_window, hwnd);
+            }
+            WM_NUMFLOW_KEYBOARD_DEVICE_CHANGED => {
+                let reason = u32::try_from(message.wParam.0).unwrap_or_default();
+                handle_keyboard_device_notification(module, hook, session_window, reason);
+            }
+            WM_NUMFLOW_INPUT_RESYNC => {
+                let Some(reason) = InputResyncReason::from_code(message.wParam.0) else {
+                    eprintln!("NumFlow: ignored unknown input resync reason");
+                    continue;
+                };
+                let outcome = resync_input_state(module, hook, session_window, reason);
+                if reason == InputResyncReason::Startup {
+                    if outcome.hook_restored {
+                        INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RUNNING, Ordering::Release);
+                    } else {
+                        let _ =
+                            dispatch_event(KeyboardHookEvent::InputUnavailable { reason }, true);
+                    }
+                }
             }
             _ => {
                 // The hook thread now owns a message-only window for WM_WTSSESSION_CHANGE. Dispatch
@@ -597,6 +969,7 @@ fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), H
 }
 
 fn handle_suspend_notification() {
+    INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_SUSPENDED, Ordering::Release);
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
     RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
@@ -614,31 +987,18 @@ fn handle_suspend_notification() {
 fn handle_resume_notification(
     module: HINSTANCE,
     hook: &mut Option<HHOOK>,
+    session_window: Option<HWND>,
     phase: ResumePhase,
 ) -> bool {
-    INTERCEPTION_ENABLED.store(false, Ordering::Release);
-    NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
     eprintln!("NumFlow: resume {} detected", phase.label());
-
-    let hook_restored = match restore_keyboard_hook(module, hook) {
-        Ok(()) => {
-            eprintln!(
-                "NumFlow: hook restored (phase={}, generation={})",
-                phase.label(),
-                HOOK_GENERATION.load(Ordering::Acquire)
-            );
-            true
-        }
-        Err(error) => {
-            eprintln!(
-                "NumFlow: hook restore failed (phase={}): {error}",
-                phase.label()
-            );
-            false
-        }
+    let reason = match phase {
+        ResumePhase::Automatic => InputResyncReason::ResumeAutomatic,
+        ResumePhase::User => InputResyncReason::ResumeUser,
+        ResumePhase::SessionUnlock => InputResyncReason::SessionUnlock,
+        ResumePhase::DesktopReady => InputResyncReason::DesktopReady,
     };
-
-    reconcile_raw_keyboard_after_resume();
+    let outcome = resync_input_state(module, hook, session_window, reason);
+    let hook_restored = outcome.hook_restored;
 
     // `GetKeyState` reflects the calling thread's message-queue state. The hook thread is a
     // background worker, so after Sleep/Resume its toggle bit can lag behind the foreground app.
@@ -647,27 +1007,36 @@ fn handle_resume_notification(
     // resume independently reconciles the mode from the VK/scan-code semantics reported by Windows.
     let tracked_num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
     eprintln!(
-        "NumFlow: NumLock resume state (tracked={tracked_num_lock_on}, source=physical-history)"
+        "NumFlow: NumLock resume state (tracked={tracked_num_lock_on}, source=last-confirmed-transition)"
     );
 
     let session_lock_pending = SESSION_LOCK_PENDING.load(Ordering::Acquire);
     let finalize_guard = resume_guard_should_finalize(phase, session_lock_pending);
 
-    if finalize_guard {
+    if finalize_guard && hook_restored {
         let sync_windows = RESUME_WINDOWS_NUM_LOCK_MISMATCH.swap(false, Ordering::AcqRel);
-        resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase, sync_windows);
-
-        RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
-        if matches!(
-            phase,
-            ResumePhase::SessionUnlock | ResumePhase::DesktopReady
-        ) {
-            SESSION_LOCK_PENDING.store(false, Ordering::Release);
-        }
-        eprintln!(
-            "NumFlow: resume NumLock lifecycle guard cleared (phase={}, tracked={tracked_num_lock_on})",
-            phase.label()
+        let delivered = resync_runtime_num_lock(
+            hook_restored,
+            tracked_num_lock_on,
+            phase.label(),
+            sync_windows,
+            reason,
         );
+
+        if delivered {
+            INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RUNNING, Ordering::Release);
+            RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
+            if matches!(
+                phase,
+                ResumePhase::SessionUnlock | ResumePhase::DesktopReady
+            ) {
+                SESSION_LOCK_PENDING.store(false, Ordering::Release);
+            }
+            eprintln!(
+                "NumFlow: resume NumLock lifecycle guard cleared (phase={}, tracked={tracked_num_lock_on})",
+                phase.label()
+            );
+        }
     } else {
         // Re-arm the keyboard hook early, but do not reactivate pointer injection before Windows
         // has returned to an interactive session. Real hardware showed SendInput returning zero
@@ -681,7 +1050,242 @@ fn handle_resume_notification(
         );
     }
 
+    if !hook_restored {
+        let _ = dispatch_event(KeyboardHookEvent::InputUnavailable { reason }, true);
+    }
+
     hook_restored
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InputResyncOutcome {
+    hook_restored: bool,
+}
+
+fn resync_input_state(
+    module: HINSTANCE,
+    hook: &mut Option<HHOOK>,
+    _session_window: Option<HWND>,
+    reason: InputResyncReason,
+) -> InputResyncOutcome {
+    let current_state = InputRuntimeState::from_raw(INPUT_RUNTIME_STATE.load(Ordering::Acquire));
+    let should_rearm = should_rearm_input(reason, current_state, hook.is_some());
+
+    if should_rearm {
+        INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RECOVERING, Ordering::Release);
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
+        NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
+    }
+
+    let hook_restored = if should_rearm {
+        match restore_keyboard_hook(module, hook) {
+            Ok(()) => {
+                eprintln!(
+                    "NumFlow: hook restored (reason={}, generation={})",
+                    reason.label(),
+                    HOOK_GENERATION.load(Ordering::Acquire)
+                );
+                true
+            }
+            Err(error) => {
+                eprintln!(
+                    "NumFlow: hook restore failed (reason={}): {error}",
+                    reason.label()
+                );
+                false
+            }
+        }
+    } else {
+        hook.is_some()
+    };
+
+    let device_notifications = KEYBOARD_DEVICE_NOTIFICATIONS_REGISTERED.load(Ordering::Acquire);
+    let windows_num_lock_on = read_windows_num_lock_state();
+    let tracked_num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+    eprintln!(
+        "NumFlow: input state resynchronized (reason={}, vk_numlock_snapshot={}, num_lock_on={}, numflow_enabled={}, hook_alive={}, raw_input_state={}, keyboard_device_notifications={})",
+        reason.label(),
+        windows_num_lock_on,
+        tracked_num_lock_on,
+        !tracked_num_lock_on,
+        hook_restored,
+        raw_input_state_label(),
+        device_notifications,
+    );
+    eprintln!(
+        "NumFlow: input health (hook alive = {}, hook callbacks = {}, raw_input_state={}, keyboard_device_notifications={})",
+        hook_restored,
+        HOOK_EVENT_COUNT.load(Ordering::Acquire),
+        raw_input_state_label(),
+        device_notifications,
+    );
+    log_input_snapshot(reason.label());
+
+    InputResyncOutcome { hook_restored }
+}
+
+fn log_input_snapshot(reason: &str) {
+    let current_process_id = unsafe { GetCurrentProcessId() };
+    let foreground = crate::foreground_process_info();
+    let foreground_scope = foreground.as_ref().map_or("other", |process| {
+        if process.process_id == current_process_id {
+            "NumFlow"
+        } else {
+            "other"
+        }
+    });
+    let foreground_process = foreground
+        .as_ref()
+        .map_or("unavailable", |process| process.process_name.as_str());
+    let num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+    let raw_input_state = raw_input_state_label();
+
+    eprintln!(
+        "NumFlow: input snapshot (reason={reason}, foreground={foreground_scope}, foreground_process={foreground_process}, hook_alive={}, hook_generation={}, hook_callbacks={}, numpad_callbacks={}, numpad_dispatched={}, numpad_dropped={}, runtime_numpad_events={}, num_lock_on={num_lock_on}, numflow_enabled={}, interception={}, raw_input_state={raw_input_state}, keyboard_device_notifications={})",
+        HOOK_INSTALLED.load(Ordering::Acquire),
+        HOOK_GENERATION.load(Ordering::Acquire),
+        HOOK_EVENT_COUNT.load(Ordering::Acquire),
+        HOOK_NUMPAD_EVENT_COUNT.load(Ordering::Acquire),
+        HOOK_NUMPAD_DISPATCHED_COUNT.load(Ordering::Acquire),
+        HOOK_NUMPAD_DROPPED_COUNT.load(Ordering::Acquire),
+        RUNTIME_NUMPAD_EVENT_COUNT.load(Ordering::Acquire),
+        !num_lock_on,
+        INTERCEPTION_ENABLED.load(Ordering::Acquire),
+        KEYBOARD_DEVICE_NOTIFICATIONS_REGISTERED.load(Ordering::Acquire),
+    );
+}
+
+fn raw_input_state_label() -> &'static str {
+    if WINIT_RAW_KEYBOARD_REGISTRATION_DISABLED.load(Ordering::Acquire) {
+        "keyboard-disabled"
+    } else {
+        "winit-owned"
+    }
+}
+
+fn should_rearm_input(
+    reason: InputResyncReason,
+    _current_state: InputRuntimeState,
+    hook_present: bool,
+) -> bool {
+    match reason {
+        // Startup, foreground changes, and keyboard hotplug are health checkpoints, not proof that
+        // Windows removed the hook. Reinstall only when the owning thread has actually lost its
+        // local handle; this keeps focus changes side-effect free and prevents duplicate hooks.
+        InputResyncReason::Startup
+        | InputResyncReason::ForegroundChanged
+        | InputResyncReason::KeyboardDeviceChanged => !hook_present,
+        InputResyncReason::NumLockChanged => false,
+        _ => true,
+    }
+}
+
+fn read_windows_num_lock_state() -> bool {
+    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
+    key_state & 1 != 0
+}
+
+fn handle_foreground_notification(
+    module: HINSTANCE,
+    hook: &mut Option<HHOOK>,
+    session_window: Option<HWND>,
+    window: HWND,
+) {
+    if let Some(target) = crate::foreground_process_info_for_window(window) {
+        eprintln!(
+            "NumFlow: foreground changed -> {} (pid={}, integrity={}, elevated={:?})",
+            target.process_name,
+            target.process_id,
+            target.integrity.unwrap_or("unknown"),
+            target.elevated
+        );
+    } else {
+        eprintln!("NumFlow: foreground changed -> <unavailable>");
+    }
+
+    let state = InputRuntimeState::from_raw(INPUT_RUNTIME_STATE.load(Ordering::Acquire));
+    if matches!(state, InputRuntimeState::Suspended) || SESSION_LOCK_PENDING.load(Ordering::Acquire)
+    {
+        eprintln!("NumFlow: foreground change observed while input runtime is suspended");
+        return;
+    }
+
+    if RESUME_NUM_LOCK_GUARD.load(Ordering::Acquire) {
+        eprintln!("NumFlow: foreground change deferred until input recovery is finalized");
+        return;
+    }
+
+    let outcome = resync_input_state(
+        module,
+        hook,
+        session_window,
+        InputResyncReason::ForegroundChanged,
+    );
+    if outcome.hook_restored
+        && !matches!(state, InputRuntimeState::Running)
+        && resync_runtime_num_lock(
+            true,
+            NUM_LOCK_ON.load(Ordering::Acquire),
+            "foreground-changed",
+            false,
+            InputResyncReason::ForegroundChanged,
+        )
+    {
+        INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RUNNING, Ordering::Release);
+    } else if !outcome.hook_restored {
+        let _ = dispatch_event(
+            KeyboardHookEvent::InputUnavailable {
+                reason: InputResyncReason::HookFailure,
+            },
+            true,
+        );
+    }
+}
+
+fn handle_keyboard_device_notification(
+    module: HINSTANCE,
+    hook: &mut Option<HHOOK>,
+    session_window: Option<HWND>,
+    reason: u32,
+) {
+    let label = match reason {
+        GIDC_ARRIVAL => "arrival",
+        GIDC_REMOVAL => "removal",
+        _ => "unknown",
+    };
+    eprintln!("NumFlow: keyboard device changed -> {label}");
+
+    if SESSION_LOCK_PENDING.load(Ordering::Acquire) || RESUME_NUM_LOCK_GUARD.load(Ordering::Acquire)
+    {
+        eprintln!("NumFlow: keyboard device change deferred until session recovery completes");
+        return;
+    }
+
+    let outcome = resync_input_state(
+        module,
+        hook,
+        session_window,
+        InputResyncReason::KeyboardDeviceChanged,
+    );
+    let num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+    if outcome.hook_restored
+        && resync_runtime_num_lock(
+            true,
+            num_lock_on,
+            "keyboard-device-changed",
+            false,
+            InputResyncReason::KeyboardDeviceChanged,
+        )
+    {
+        INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_RUNNING, Ordering::Release);
+    } else if !outcome.hook_restored {
+        let _ = dispatch_event(
+            KeyboardHookEvent::InputUnavailable {
+                reason: InputResyncReason::KeyboardDeviceChanged,
+            },
+            true,
+        );
+    }
 }
 
 fn resume_guard_should_finalize(phase: ResumePhase, session_lock_pending: bool) -> bool {
@@ -692,18 +1296,13 @@ fn resume_guard_should_finalize(phase: ResumePhase, session_lock_pending: bool) 
     }
 }
 
-fn reconcile_raw_keyboard_after_resume() {
-    if let Err(error) = remove_raw_keyboard_device_event_registration() {
-        eprintln!("NumFlow: Raw Input reconciliation after resume failed: {error}");
-    }
-}
-
 fn resync_runtime_num_lock(
     hook_restored: bool,
     num_lock_on: bool,
-    phase: ResumePhase,
+    phase: &str,
     sync_windows: bool,
-) {
+    reason: InputResyncReason,
+) -> bool {
     // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
     // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
     // the tracked Num Lock/NumFlow mode. Resume never replaces that mode with `GetKeyState` from the
@@ -719,7 +1318,12 @@ fn resync_runtime_num_lock(
         sync_system: sync_windows,
         play_feedback: false,
     };
-    let delivered = dispatch_lifecycle_events(&[cleanup, restore]);
+    let unavailable = KeyboardHookEvent::InputUnavailable { reason };
+    let delivered = if hook_restored {
+        dispatch_lifecycle_events(&[cleanup, restore])
+    } else {
+        dispatch_lifecycle_events(&[cleanup, restore, unavailable])
+    };
 
     if hook_restored && delivered {
         INTERCEPTION_ENABLED.store(!num_lock_on, Ordering::Release);
@@ -730,13 +1334,14 @@ fn resync_runtime_num_lock(
     if delivered {
         eprintln!(
             "NumFlow: NumLock resynced (phase={}, num_lock_on={num_lock_on}, numflow_enabled={}, interception={})",
-            phase.label(),
+            phase,
             !num_lock_on,
             INTERCEPTION_ENABLED.load(Ordering::Acquire)
         );
     } else {
         eprintln!("NumFlow: NumLock resync event could not be delivered");
     }
+    delivered
 }
 
 fn lifecycle_log(message: &str) {
@@ -795,6 +1400,7 @@ fn queue_session_notification(reason: u32) {
     if reason == WTS_SESSION_LOCK {
         SESSION_RESUME_STAGE.store(SESSION_STAGE_IDLE, Ordering::Release);
         SESSION_LOCK_PENDING.store(true, Ordering::Release);
+        INPUT_RUNTIME_STATE.store(INPUT_RUNTIME_SUSPENDED, Ordering::Release);
         RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
         RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(false, Ordering::Release);
         NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
@@ -970,7 +1576,7 @@ fn observe_num_lock(state: KeyState) -> Option<bool> {
         INTERCEPTION_ENABLED.store(true, Ordering::Release);
     } else if changed == Some(true) {
         // Num Lock ON means normal number entry. Stop interception immediately; the runtime will
-        // release any held pointer state and then synchronize the Windows lock state.
+        // release any held pointer state while Windows processes the physical toggle normally.
         INTERCEPTION_ENABLED.store(false, Ordering::Release);
     }
 
@@ -998,6 +1604,13 @@ fn dispatch_num_lock_change(
         }
         return None;
     }
+
+    // UI commands and physical hook callbacks share one Num Lock transition order. The hook must
+    // never wait behind a SendInput call from the runtime worker; if the short state transaction is
+    // busy, pass this physical event through and let its next NumPad semantic reconcile the mode.
+    let Ok(_state_guard) = NUM_LOCK_STATE_ORDER.try_lock() else {
+        return None;
+    };
 
     let changed = observe_num_lock(state);
     if let Some(num_lock_on) = changed {
@@ -1072,6 +1685,10 @@ fn numpad_mode_reconcile_action(
 
 fn reconcile_num_lock_from_numpad(event: PhysicalKeyEvent) {
     let Some(observed_num_lock_on) = infer_num_lock_from_numpad(event) else {
+        return;
+    };
+
+    let Ok(_state_guard) = NUM_LOCK_STATE_ORDER.try_lock() else {
         return;
     };
 
@@ -1155,15 +1772,9 @@ fn is_numflow_num_lock_replay(keyboard: KBDLLHOOKSTRUCT) -> bool {
         && keyboard.dwExtraInfo == NUMFLOW_NUM_LOCK_INJECTION_TAG
 }
 
-fn intercept_physical_num_lock(state: KeyState) -> bool {
-    // Always consume the physical Num Lock sequence. The runtime performs the tagged Windows
-    // replay after this low-level hook callback returns, avoiding re-entrant SendInput here.
-    let _ = dispatch_num_lock_change(state, true, true);
-    true
-}
-
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
+        HOOK_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
         let state = match u32::try_from(wparam.0).ok() {
             Some(WM_KEYDOWN | WM_SYSKEYDOWN) => Some(KeyState::Pressed),
             Some(WM_KEYUP | WM_SYSKEYUP) => Some(KeyState::Released),
@@ -1185,10 +1796,11 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                     return unsafe { CallNextHookEx(None, code, wparam, lparam) };
                 }
 
-                if intercept_physical_num_lock(state) {
-                    return LRESULT(1);
-                }
-
+                // Do not consume the physical toggle. Windows owns the actual Num Lock state and
+                // LED; NumFlow observes the edge before returning and derives its mode from that
+                // same transition. This is also the safe fallback when SendInput is blocked by
+                // UIPI or the input desktop is changing.
+                let _ = dispatch_num_lock_change(state, false, true);
                 return unsafe { CallNextHookEx(None, code, wparam, lparam) };
             }
 
@@ -1200,13 +1812,26 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
             );
 
             if map_numpad_key(event).is_some() {
+                HOOK_NUMPAD_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
                 reconcile_num_lock_from_numpad(event);
 
                 if INTERCEPTION_ENABLED.load(Ordering::Acquire)
                     && !NUM_LOCK_ON.load(Ordering::Acquire)
-                    && dispatch_event(KeyboardHookEvent::Key(event), false)
                 {
-                    return LRESULT(1);
+                    if dispatch_event(KeyboardHookEvent::Key(event), false) {
+                        HOOK_NUMPAD_DISPATCHED_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return LRESULT(1);
+                    }
+
+                    HOOK_NUMPAD_DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
+                    eprintln!(
+                        "NumFlow: NumPad event dispatch failed (scan_code={}, state={:?}, hook_alive={}, interception={}, num_lock_on={})",
+                        event.scan_code,
+                        event.state,
+                        HOOK_INSTALLED.load(Ordering::Acquire),
+                        INTERCEPTION_ENABLED.load(Ordering::Acquire),
+                        NUM_LOCK_ON.load(Ordering::Acquire),
+                    );
                 }
             }
         }
@@ -1217,17 +1842,18 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
     use windows::{
         Win32::{
             Foundation::ERROR_INVALID_HOOK_HANDLE,
             UI::{
-                Input::{
-                    KeyboardAndMouse::{
-                        INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
-                    },
-                    RIDEV_REMOVE,
+                Input::KeyboardAndMouse::{
+                    INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
                 },
+                Input::{RAWINPUTDEVICE, RIDEV_REMOVE},
                 WindowsAndMessaging::{
+                    DBT_DEVTYP_DEVICEINTERFACE, DEV_BROADCAST_DEVICEINTERFACE_W,
                     PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND,
                     PBT_APMSUSPEND, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
                 },
@@ -1237,25 +1863,116 @@ mod tests {
     };
 
     use super::{
-        HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
+        GUID_DEVINTERFACE_KEYBOARD, INPUT_RUNTIME_RECOVERING, INPUT_RUNTIME_RUNNING,
+        INPUT_RUNTIME_SUSPENDED, InputResyncReason, InputRuntimeState, NUM_LOCK_SCAN_CODE,
         NUMFLOW_NUM_LOCK_INJECTION_TAG, NumpadModeReconcileAction, RESUME_STAGE_AUTOMATIC,
         RESUME_STAGE_IDLE, RESUME_STAGE_USER, ResumePhase, SESSION_STAGE_DESKTOP_READY,
         SESSION_STAGE_IDLE, SESSION_STAGE_UNLOCK, WM_NUMFLOW_DESKTOP_READY,
         WM_NUMFLOW_RESUME_AUTOMATIC, WM_NUMFLOW_RESUME_USER, WM_NUMFLOW_SESSION_UNLOCK,
         WM_NUMFLOW_SUSPEND, WTS_SESSION_DESKTOP_READY_REASON, hook_is_already_gone,
-        infer_num_lock_from_numpad, num_lock_replay_inputs, num_lock_transition,
-        numpad_mode_reconcile_action, ordered_power_notification, ordered_session_notification,
-        power_notification_message, raw_keyboard_removal_device, resume_guard_should_finalize,
+        infer_num_lock_from_numpad, keyboard_device_notification_filter, num_lock_replay_inputs,
+        num_lock_transition, numpad_mode_reconcile_action, ordered_power_notification,
+        ordered_session_notification, power_notification_message, raw_keyboard_removal_device,
+        resume_guard_should_finalize, should_rearm_input,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
     #[test]
-    fn raw_keyboard_removal_descriptor_does_not_touch_mouse_registration() {
+    fn device_notification_filter_is_keyboard_interface_only() {
+        let filter = keyboard_device_notification_filter();
+
+        assert_eq!(
+            filter.dbcc_size,
+            u32::try_from(size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>())
+                .expect("filter size should fit")
+        );
+        assert_eq!(filter.dbcc_devicetype, DBT_DEVTYP_DEVICEINTERFACE.0);
+        assert_eq!(filter.dbcc_classguid, GUID_DEVINTERFACE_KEYBOARD);
+    }
+
+    #[test]
+    fn raw_keyboard_removal_targets_only_the_generic_keyboard_class() {
         let device = raw_keyboard_removal_device();
 
-        assert_eq!(device.usUsagePage, HID_USAGE_PAGE_GENERIC);
-        assert_eq!(device.usUsage, HID_USAGE_GENERIC_KEYBOARD);
+        assert_eq!(device.usUsagePage, 0x01);
+        assert_eq!(device.usUsage, 0x06);
         assert_eq!(device.dwFlags, RIDEV_REMOVE);
+        assert!(device.hwndTarget.0.is_null());
+        assert_eq!(
+            size_of::<RAWINPUTDEVICE>(),
+            std::mem::size_of_val(&device),
+            "descriptor must use the Win32 ABI type"
+        );
+    }
+
+    #[test]
+    fn input_runtime_state_decodes_unknown_values_as_recovering() {
+        assert_eq!(
+            InputRuntimeState::from_raw(INPUT_RUNTIME_RUNNING),
+            InputRuntimeState::Running
+        );
+        assert_eq!(
+            InputRuntimeState::from_raw(INPUT_RUNTIME_SUSPENDED),
+            InputRuntimeState::Suspended
+        );
+        assert_eq!(
+            InputRuntimeState::from_raw(INPUT_RUNTIME_RECOVERING),
+            InputRuntimeState::Recovering
+        );
+        assert_eq!(
+            InputRuntimeState::from_raw(u32::MAX),
+            InputRuntimeState::Recovering
+        );
+    }
+
+    #[test]
+    fn health_checkpoints_do_not_reinstall_a_present_low_level_hook() {
+        for reason in [
+            InputResyncReason::Startup,
+            InputResyncReason::ForegroundChanged,
+            InputResyncReason::KeyboardDeviceChanged,
+        ] {
+            assert!(!should_rearm_input(
+                reason,
+                InputRuntimeState::Running,
+                true,
+            ));
+            assert!(!should_rearm_input(
+                reason,
+                InputRuntimeState::Recovering,
+                true,
+            ));
+            assert!(should_rearm_input(
+                reason,
+                InputRuntimeState::Recovering,
+                false,
+            ));
+        }
+        assert!(should_rearm_input(
+            InputResyncReason::SessionUnlock,
+            InputRuntimeState::Suspended,
+            true,
+        ));
+    }
+
+    #[test]
+    fn input_resync_reasons_round_trip_through_thread_message_codes() {
+        let reasons = [
+            InputResyncReason::Startup,
+            InputResyncReason::ResumeAutomatic,
+            InputResyncReason::ResumeUser,
+            InputResyncReason::SessionUnlock,
+            InputResyncReason::DesktopReady,
+            InputResyncReason::ForegroundChanged,
+            InputResyncReason::KeyboardDeviceChanged,
+            InputResyncReason::HookFailure,
+            InputResyncReason::NumLockChanged,
+        ];
+
+        for reason in reasons {
+            assert_eq!(InputResyncReason::from_code(reason.code()), Some(reason));
+        }
+        assert_eq!(InputResyncReason::from_code(usize::MAX), None);
     }
 
     #[test]

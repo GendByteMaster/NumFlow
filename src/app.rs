@@ -1079,6 +1079,8 @@ pub fn run(background: bool) -> Result<(), AppError> {
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
     configure_main_window_material(&window);
 
+    crate::platform_input::prepare_after_ui().map_err(AppError::Runtime)?;
+
     #[cfg(windows)]
     let reduced_motion = match numflow_windows::client_area_animations_enabled() {
         Ok(enabled) => !enabled,
@@ -1094,16 +1096,8 @@ pub fn run(background: bool) -> Result<(), AppError> {
     let reduced_motion = false;
     window.set_reduced_motion(reduced_motion);
 
-    #[cfg(windows)]
-    if let Err(error) = numflow_windows::remove_raw_keyboard_device_event_registration() {
-        tracing::warn!(
-            %error,
-            "failed to remove winit raw-keyboard registration; foreground NumPad interception may be unavailable"
-        );
-    } else {
-        tracing::debug!(
-            "removed winit raw-keyboard registration for foreground WH_KEYBOARD_LL compatibility"
-        );
+    if let Err(error) = runtime.borrow().resync_input_state() {
+        tracing::warn!(%error, "failed to queue startup input runtime resynchronization");
     }
 
     sync_window_from_settings(&window, &settings.borrow());

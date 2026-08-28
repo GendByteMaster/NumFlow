@@ -142,6 +142,19 @@ fn send_inputs(inputs: &[INPUT]) -> Result<(), PointerError> {
     if inserted == expected {
         Ok(())
     } else {
+        if let Some(target) = crate::foreground_process_info() {
+            eprintln!(
+                "NumFlow: SendInput incomplete (inserted={inserted}, expected={expected}, foreground={}, pid={}, integrity={}, elevated={:?}); Windows UIPI may block input",
+                target.process_name,
+                target.process_id,
+                target.integrity.unwrap_or("unknown"),
+                target.elevated
+            );
+        } else {
+            eprintln!(
+                "NumFlow: SendInput incomplete (inserted={inserted}, expected={expected}); foreground process could not be diagnosed"
+            );
+        }
         Err(PointerError::InjectionIncomplete { expected, inserted })
     }
 }
