@@ -14,10 +14,11 @@ That created three related failure modes after Sleep/Hibernate:
 2. A low-level keyboard hook could no longer be assumed to be usable after the power transition, but there is no reliable Win32 API that answers whether a `WH_KEYBOARD_LL` hook is still operational.
 3. The Raw Input keyboard registration removed after Slint/winit initialization was not reconciled again after resume.
 
-The first recovery implementation fixed those gaps, but real hardware testing exposed two additional weaknesses:
+The first recovery implementation fixed those gaps, but real hardware testing exposed additional weaknesses:
 
 - `PBT_APMRESUMEAUTOMATIC` can arrive before the user-visible resume transition is fully complete. Treating a hook successfully installed at that early phase as final was too optimistic.
 - resume restored the cached `NUM_LOCK_ON` value instead of re-reading the Windows toggle state during the later user-resume phase, so Windows and NumFlow could remain logically desynchronized.
+- real hardware logs showed the callback-to-`PostThreadMessageW` bridge could deliver `resume user` to the hook thread before a delayed `resume automatic` callback. Without ordering protection, that stale automatic event could perform another provisional re-arm after final user recovery.
 
 As a result, ordinary Windows keyboard input could already be responsive while NumFlow still failed to consume NumPad input or reported the wrong mode.
 
@@ -28,6 +29,7 @@ Resume recovery must remain:
 - event-driven;
 - fast and independent of arbitrary sleeps such as `sleep(5s)`;
 - safe against duplicate hooks;
+- safe against out-of-order power callback delivery;
 - safe for active drag/hold state;
 - compatible with tray/HUD/background operation;
 - compatible with `Start with Windows` and `--background`;
@@ -39,18 +41,24 @@ The settings window is never opened as part of recovery.
 
 The keyboard-hook thread registers for suspend/resume notifications with `RegisterSuspendResumeNotification` in callback mode.
 
-The callback itself stays minimal. It maps the Windows power event to an internal `WM_APP` message and posts that message to the existing keyboard-hook thread with `PostThreadMessageW`.
+The callback maps the Windows power event to an internal `WM_APP` message and posts that message to the existing keyboard-hook thread with `PostThreadMessageW`. Callback delivery is serialized before posting to the hook thread, and resume stages are monotonic:
+
+```text
+idle → automatic → user
+```
+
+Once the user stage has been queued, a delayed `PBT_APMRESUMEAUTOMATIC` or `PBT_APMRESUMECRITICAL` callback from the same resume cycle is treated as stale and ignored. `PBT_APMSUSPEND` resets the stage to idle for the next lifecycle cycle.
 
 Handled events:
 
 | Windows event | NumFlow action |
 | --- | --- |
-| `PBT_APMSUSPEND` | enter suspend fail-safe state |
-| `PBT_APMRESUMEAUTOMATIC` | perform provisional immediate recovery |
-| `PBT_APMRESUMECRITICAL` | perform provisional immediate recovery |
+| `PBT_APMSUSPEND` | enter suspend fail-safe state and reset resume stage |
+| `PBT_APMRESUMEAUTOMATIC` | perform provisional immediate recovery unless user recovery is already queued |
+| `PBT_APMRESUMECRITICAL` | perform provisional immediate recovery unless user recovery is already queued |
 | `PBT_APMRESUMESUSPEND` | always perform final late/user recovery and refresh Num Lock state |
 
-No polling loop is introduced.
+No polling loop or Tokio runtime is introduced for lifecycle recovery.
 
 ## Suspend path
 
@@ -64,9 +72,9 @@ When suspend is detected NumFlow:
 
 The lifecycle event uses the same runtime path that already knows how to stop pointer motion and release a NumFlow-owned held mouse button.
 
-## Resume recovery v2
+## Resume recovery v3
 
-Recovery now has two explicit phases.
+Recovery has two explicit phases plus ordering protection around the callback bridge.
 
 ### 1. Automatic/provisional phase
 
@@ -118,6 +126,18 @@ restore interception only if recovery succeeded
 
 This second re-arm is deliberate. A stored `HHOOK` value is not a liveness proof, and a hook installed during the early power transition can become unreliable before the interactive session is fully usable.
 
+### 3. Out-of-order callback protection
+
+Real Windows hardware produced a sequence where `resume user` reached the hook thread before a later `resume automatic` callback. Recovery v3 serializes the callback-to-message bridge and keeps a monotonic resume stage.
+
+If the user phase is already queued, a delayed automatic callback is ignored and logged instead of re-arming the hook again:
+
+```text
+NumFlow: stale automatic resume callback ignored after user resume
+```
+
+The final user-phase hook and Num Lock state therefore cannot be regressed by a stale provisional event.
+
 ## Hook recovery
 
 There is no reliable `WH_KEYBOARD_LL` liveness query. NumFlow therefore uses deterministic re-arming instead of pretending that a stored `HHOOK` value proves that the hook still works.
@@ -157,7 +177,7 @@ Interception is only re-enabled when both the replacement hook is installed and 
 
 ## Diagnostics
 
-Recovery v2 emits phase-aware diagnostics such as:
+The normal ordered path emits diagnostics such as:
 
 ```text
 NumFlow: suspend detected
@@ -170,6 +190,16 @@ NumFlow: NumLock resume state (cached=..., windows=..., effective=...)
 NumFlow: NumLock resynced (phase=user, num_lock_on=..., numflow_enabled=..., interception=...)
 ```
 
+If Windows callback scheduling presents the user phase first, a later automatic callback is not allowed to regress recovery:
+
+```text
+NumFlow: resume user detected
+NumFlow: hook restored (phase=user, generation=2)
+NumFlow: NumLock resume state (cached=..., windows=..., effective=...)
+NumFlow: NumLock resynced (phase=user, ...)
+NumFlow: stale automatic resume callback ignored after user resume
+```
+
 Hook-recovery and Raw Input reconciliation failures are also logged. These diagnostics are intended for troubleshooting real hardware Sleep/Hibernate issues without adding timing delays to the input path.
 
 ## Safety invariants
@@ -178,6 +208,7 @@ Changes to this subsystem must preserve the following rules:
 
 - never create a replacement hook before the previous hook is retired;
 - always perform a fresh final re-arm on `PBT_APMRESUMESUSPEND`;
+- never allow a delayed automatic callback to regress an already queued user-resume phase;
 - never enable interception while hook recovery is incomplete;
 - never keep stale pointer movement active across suspend/resume;
 - never keep a NumFlow-owned mouse hold latched across lifecycle cleanup;
@@ -186,7 +217,8 @@ Changes to this subsystem must preserve the following rules:
 - do not show the main settings window during recovery;
 - do not change NumPad bindings as part of lifecycle recovery;
 - do not use arbitrary multi-second sleeps as the primary recovery mechanism;
-- keep the power callback minimal and move recovery work onto the existing hook message-loop thread.
+- do not add an async runtime only to coordinate Win32 lifecycle messages;
+- keep recovery work on the existing hook message-loop architecture.
 
 ## Automated testing
 
@@ -197,6 +229,8 @@ Current focused coverage includes:
 - mapping Windows suspend/resume notification constants to internal hook-thread messages;
 - treating `ERROR_INVALID_HOOK_HANDLE` as an already-retired hook during safe re-arm;
 - proving that the user-resume phase is the phase that refreshes Windows Num Lock state;
+- proving `automatic → user` remains monotonic;
+- proving `user → delayed automatic` does not regress back to automatic recovery;
 - existing Raw Input removal descriptor behavior;
 - existing Num Lock transition/replay behavior;
 - existing runtime cleanup tests for movement and held-button release.
@@ -222,7 +256,7 @@ At minimum verify on real Windows hardware:
 4. Repeat while a drag/hold is latched and confirm no mouse button remains stuck after resume.
 5. Repeat with NumFlow Off / Num Lock On and confirm ordinary number entry remains ordinary number entry.
 6. Verify Num Lock LED and NumFlow mode stay synchronized.
-7. Inspect logs and confirm both `resume automatic` and `resume user` recovery phases occur when Windows emits them.
+7. Inspect logs. In the normal case confirm automatic then user recovery. If user recovery appears first, confirm any delayed automatic callback is logged as stale and does not produce another `hook restored (phase=automatic, ...)` line.
 8. Confirm hook generation increases on the final user-phase re-arm.
 9. Repeat from Hibernate where supported.
 10. Repeat while NumFlow was started with `--background` / Start with Windows.
