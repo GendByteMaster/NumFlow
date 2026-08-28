@@ -30,3 +30,6 @@ All notable user-facing changes to NumFlow are tracked here.
 - UI sound attenuation and persistent runtime volume control.
 - NumPad responsiveness after Windows Sleep/Hibernate by restoring `WH_KEYBOARD_LL` from Windows power events, reconciling Raw Input, clearing stale movement/hold state, and resynchronizing Num Lock without timer-based recovery delays.
 - Resume callback ordering race observed on real Windows hardware: power callbacks are serialized and resume stages are monotonic, so a delayed `PBT_APMRESUMEAUTOMATIC` callback cannot regress an already-processed `PBT_APMRESUMESUSPEND` recovery.
+- Resume/session Num Lock desynchronization by freezing the tracked NumFlow mode until the final interactive session recovery phase instead of accepting transient lock-screen Num Lock semantics.
+- Premature pointer injection during the lock-screen-to-desktop transition: automatic/user power phases now re-arm the keyboard hook while pointer activation remains quiesced until `WTS_SESSION_UNLOCK`/desktop-ready.
+- A failed relative mouse-movement injection no longer permanently disables NumFlow; movement is stopped safely while the enabled mode remains available for the next physical movement press.
