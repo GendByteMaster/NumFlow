@@ -50,6 +50,15 @@ fn main() {
         }
     };
 
+    #[cfg(windows)]
+    let _at_session = match numflow_windows::AssistiveTechnologySession::start() {
+        Ok(session) => Some(session),
+        Err(error) => {
+            tracing::warn!(%error, "failed to notify Ease of Access about the NumFlow session");
+            None
+        }
+    };
+
     if let Err(error) = app::run(background) {
         tracing::error!(%error, "NumFlow terminated with an error");
         std::process::exit(1);

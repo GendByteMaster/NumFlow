@@ -75,7 +75,7 @@ Tagged GitHub releases include `SHA256SUMS.txt`. Compare the SHA-256 hash of the
 
 ## Current signing status
 
-The current release pipeline produces unsigned artifacts. Windows may therefore show SmartScreen or publisher warnings. Production code signing is a separate release-readiness item and should be added only with a protected code-signing certificate workflow; private signing material must never be committed to the repository.
+The current release pipeline produces unsigned artifacts. Windows may therefore show SmartScreen or publisher warnings. The MSI installs the minimal `numflow-secure.exe` and declarative Ease of Access registration, but production `uiAccess=true` is intentionally not enabled in these unsigned builds. Windows requires a valid Authenticode signature and a protected installation location before it grants UIAccess. Production code signing must use a protected certificate workflow; private signing material must never be committed to the repository. See [`WINDOWS_ACCESSIBILITY.md`](WINDOWS_ACCESSIBILITY.md).
 
 ## Future platforms
 

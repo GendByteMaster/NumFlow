@@ -46,6 +46,8 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 - Start-minimized and start-with-Windows configuration.
 - Single-instance protection.
 - Fail-safe release of a held mouse button during disable/shutdown/error paths.
+- Declarative Windows Ease of Access registration with a separate minimal protected-desktop runtime in the MSI.
+- Bounded accessibility-settings synchronization; the secure runtime never reads the full TOML configuration.
 - Event-driven UI runtime notifications.
 - Idle background runtime that blocks instead of waking on every motion tick.
 
@@ -76,8 +78,13 @@ Num Lock itself is reserved by NumFlow while the app is running. Other NumPad bi
 
 Windows x64 releases provide two artifacts:
 
-- **MSI:** `NumFlow-<version>-x64.msi` installs to `C:\Program Files\NumFlow`, creates a Start Menu shortcut, and appears in Windows Installed Apps.
+- **MSI:** `NumFlow-<version>-x64.msi` installs the normal and minimal secure runtimes to `C:\Program Files\NumFlow`, registers NumFlow with Windows Ease of Access, creates a Start Menu shortcut, and appears in Windows Installed Apps.
 - **Portable:** `NumFlow-<version>-portable-x64.zip` can be extracted and run without installation.
+
+Protected-desktop integration is MSI-only. The portable package has no machine-wide AT registration
+and unsigned builds do not request UIAccess. See
+[`docs/WINDOWS_ACCESSIBILITY.md`](docs/WINDOWS_ACCESSIBILITY.md) for the signing, policy, and manual
+validation boundaries.
 
 `Start with Windows` remains an explicit user preference. When enabled, NumFlow registers the current executable under the current-user Windows Run key with `--background`, so the global input runtime and tray start after sign-in without opening the settings window. The startup registration itself does not require administrator rights.
 
@@ -192,7 +199,7 @@ GitHub Actions runs the Windows quality gate on `dev/master` using Rust `1.98`:
 3. `cargo test --locked --workspace --all-features`
 4. `cargo build --locked --workspace --release --all-features`
 
-The current Windows quality gate runs 98 deterministic tests (43 application, 37 Windows backend, 12 portable core black-box, and 6 Windows keyboard black-box) plus 1 explicitly ignored interactive hook smoke test. Real Sleep/Unlock, device reconnect, focus, and integrity scenarios remain manual release checks; see [`docs/TESTING.md`](docs/TESTING.md).
+The Windows quality gate runs deterministic application, core, Windows backend, and black-box tests plus an explicitly ignored interactive hook smoke test. Real Sleep/Unlock, device reconnect, focus, integrity, UAC secure-desktop, and logon scenarios remain manual release checks; see [`docs/TESTING.md`](docs/TESTING.md) and [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md).
 
 ## v0.1 work still open
 

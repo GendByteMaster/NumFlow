@@ -127,6 +127,7 @@ mod platform {
     use super::{RuntimeConfig, RuntimeError, RuntimeEvent, RuntimeStateSnapshot, UiSoundCue};
 
     const MOTION_TICK: Duration = Duration::from_millis(8);
+    const DESKTOP_GUARD_TICK: Duration = Duration::from_millis(100);
     const COMMAND_QUEUE_CAPACITY: usize = 64;
     const EVENT_QUEUE_CAPACITY: usize = 64;
     const KEYBOARD_HOOK_START_ATTEMPTS: usize = 3;
@@ -561,7 +562,6 @@ mod platform {
         hook.set_interception_enabled(false);
 
         let audio_feedback = start_audio_feedback(config.sounds_enabled, config.sound_volume);
-        let mut normalizer = KeyboardEventNormalizer::default();
         let mut machine = RuntimeMachine::new(config, WindowsPointer::default());
         let startup_effects = match apply_num_lock_mode(&mut machine, hook.num_lock_on()) {
             Ok(effects) => effects,
@@ -578,8 +578,29 @@ mod platform {
             });
         }
         let _ = ready_sender.send(Ok(()));
+        run_worker_loop(
+            &mut machine,
+            &hook,
+            &keyboard_receiver,
+            command_receiver,
+            event_sink,
+            audio_feedback.as_ref(),
+        );
+    }
+
+    fn run_worker_loop(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        keyboard_receiver: &Receiver<KeyboardHookEvent>,
+        command_receiver: &Receiver<RuntimeCommand>,
+        event_sink: &RuntimeEventSink,
+        audio_feedback: Option<&AudioFeedbackService>,
+    ) {
+        let mut normalizer = KeyboardEventNormalizer::default();
         let motion_tick = crossbeam_channel::tick(MOTION_TICK);
+        let desktop_guard_tick = crossbeam_channel::tick(DESKTOP_GUARD_TICK);
         let mut previous_tick = Instant::now();
+        let mut desktop_active = numflow_windows::current_thread_owns_input_desktop();
         let mut running = true;
 
         while running {
@@ -588,21 +609,21 @@ mod platform {
                     recv(command_receiver) -> command => {
                         running = handle_command_message(
                             command,
-                            &mut machine,
-                            &hook,
+                            machine,
+                            hook,
                             &mut normalizer,
                             event_sink,
-                            audio_feedback.as_ref(),
+                            audio_feedback,
                         );
                     }
                     recv(keyboard_receiver) -> event => {
                         running = handle_keyboard_message(
                             event,
-                            &mut machine,
-                            &hook,
+                            machine,
+                            hook,
                             &mut normalizer,
                             event_sink,
-                            audio_feedback.as_ref(),
+                            audio_feedback,
                         );
                     }
                     recv(motion_tick) -> _ => {
@@ -617,32 +638,89 @@ mod platform {
                             );
                         }
                     }
+                    recv(desktop_guard_tick) -> _ => {
+                        handle_desktop_guard(
+                            machine,
+                            hook,
+                            &mut normalizer,
+                            event_sink,
+                            &mut desktop_active,
+                        );
+                    }
                 }
             } else {
                 crossbeam_channel::select! {
                     recv(command_receiver) -> command => {
                         running = handle_command_message(
                             command,
-                            &mut machine,
-                            &hook,
+                            machine,
+                            hook,
                             &mut normalizer,
                             event_sink,
-                            audio_feedback.as_ref(),
+                            audio_feedback,
                         );
                     }
                     recv(keyboard_receiver) -> event => {
                         running = handle_keyboard_message(
                             event,
-                            &mut machine,
-                            &hook,
+                            machine,
+                            hook,
                             &mut normalizer,
                             event_sink,
-                            audio_feedback.as_ref(),
+                            audio_feedback,
+                        );
+                    }
+                    recv(desktop_guard_tick) -> _ => {
+                        handle_desktop_guard(
+                            machine,
+                            hook,
+                            &mut normalizer,
+                            event_sink,
+                            &mut desktop_active,
                         );
                     }
                 }
                 previous_tick = Instant::now();
             }
+        }
+    }
+
+    fn handle_desktop_guard(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+        desktop_active: &mut bool,
+    ) {
+        let owns_input = numflow_windows::current_thread_owns_input_desktop();
+        if owns_input == *desktop_active {
+            return;
+        }
+
+        *desktop_active = owns_input;
+        if !owns_input {
+            fail_safe(
+                machine,
+                hook,
+                normalizer,
+                event_sink,
+                "input desktop changed; normal runtime quiesced",
+            );
+            if !hook.suspend_for_desktop_switch() {
+                tracing::warn!("failed to queue inactive-desktop hook retirement");
+            }
+            return;
+        }
+
+        normalizer.reset();
+        if !hook.resync_input_state(InputResyncReason::DesktopSwitch) {
+            fail_safe(
+                machine,
+                hook,
+                normalizer,
+                event_sink,
+                "failed to queue hook restoration after desktop switch",
+            );
         }
     }
 

@@ -4,6 +4,7 @@ const APP_ICON_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
 const APP_ICON_SOURCE: &str = "assets/numflow-icon.svg";
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=NUMFLOW_UIACCESS");
     for path in [
         "ui/main.slint",
         "ui/app.slint",
@@ -64,7 +65,60 @@ fn embed_windows_executable_icon() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| io::Error::other("generated icon path is not valid UTF-8"))?;
     let mut resources = winresource::WindowsResource::new();
     resources.set_icon(icon_path);
+    resources.set_manifest(&windows_manifest(uiaccess_build_enabled()));
+    resources.append_rc_content(
+        r#"
+LANGUAGE 0x9, 0x1
+STRINGTABLE
+BEGIN
+    100 "NumFlow"
+    101 "Keyboard-driven pointer control. A minimal NumFlow runtime is used on protected Windows desktops."
+END
+"#,
+    );
     resources.compile()?;
 
     Ok(())
+}
+
+fn uiaccess_build_enabled() -> bool {
+    env::var("NUMFLOW_UIACCESS").is_ok_and(|value| value == "1")
+}
+
+fn windows_manifest(uiaccess: bool) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="GendByteMaster.NumFlow" type="win32" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="{uiaccess}" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}}" />
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>"#,
+        uiaccess = if uiaccess { "true" } else { "false" }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_manifest;
+
+    #[test]
+    fn uiaccess_is_opt_in_for_signed_production_artifacts() {
+        assert!(windows_manifest(true).contains("uiAccess=\"true\""));
+        assert!(windows_manifest(false).contains("uiAccess=\"false\""));
+    }
 }

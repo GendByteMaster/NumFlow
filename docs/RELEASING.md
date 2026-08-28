@@ -54,6 +54,7 @@ $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-J
 wix build installer/NumFlow.wxs -arch x64 `
   -d "ProductVersion=$version" `
   -d "NumFlowExe=$((Resolve-Path target/release/numflow.exe).Path)" `
+  -d "NumFlowSecureExe=$((Resolve-Path target/release/numflow-secure.exe).Path)" `
   -pdbtype none `
   -out "NumFlow-$version-x64.msi"
 ```
@@ -65,6 +66,14 @@ The CI pipeline additionally decompiles the resulting MSI as a structural packag
 `installer/NumFlow.wxs` has a stable `UpgradeCode`, while WiX creates the package/product identity required for each build. `MajorUpgrade` blocks downgrades and allows a newer NumFlow MSI to replace an older installed version.
 
 The version passed to WiX comes from the root `Cargo.toml`, keeping the Rust binary, file names, MSI, and release tag under one version source of truth.
+
+The command above deliberately produces `uiAccess=false` while the public pipeline is unsigned.
+A production accessibility artifact must set `NUMFLOW_UIACCESS=1` for the release build and then
+Authenticode-sign both `numflow.exe` and `numflow-secure.exe` before WiX packaging. Sign the MSI
+after packaging. Do not publish a `uiAccess=true` executable unless its signature validates and it
+will be installed under `%ProgramFiles%\NumFlow`; Windows can refuse to start a UIAccess executable
+that does not satisfy those trust requirements. The portable ZIP cannot provide protected-desktop
+AT registration or trusted-location UIAccess.
 
 ## Signing
 

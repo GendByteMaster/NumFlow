@@ -153,6 +153,41 @@ For every scaling level verify:
 - [ ] HUD does not obscure the active pointer target in normal use.
 - [ ] Drag state remains visually understandable.
 
+## Windows AT / desktop transition matrix
+
+Run this section only with the per-machine MSI installed. Repeat the higher-integrity cases with the
+explicit `--elevated` profile and, separately, with a signed production `uiAccess=true` build.
+
+For every row verify cursor movement, left/right click, hold/release, no duplicate input, no dropped
+NumPad events, correct Num Lock restoration, `mouse_hold=false` after transition, and exactly one
+active hook on the current input desktop.
+
+| Foreground or transition | Movement/click/hold | No duplicates/drops | Num Lock restored | Diagnostics captured |
+| --- | --- | --- | --- | --- |
+| NumFlow focused | [ ] | [ ] | [ ] | [ ] |
+| File Explorer | [ ] | [ ] | [ ] | [ ] |
+| Chrome/browser | [ ] | [ ] | [ ] | [ ] |
+| IDE/editor | [ ] | [ ] | [ ] | [ ] |
+| Normal Terminal | [ ] | [ ] | [ ] | [ ] |
+| Task Manager | [ ] | [ ] | [ ] | [ ] |
+| Administrator Terminal | [ ] | [ ] | [ ] | [ ] |
+| Elevated PowerShell | [ ] | [ ] | [ ] | [ ] |
+| NumFlow background/tray | [ ] | [ ] | [ ] | [ ] |
+| Num Lock On/Off | [ ] | [ ] | [ ] | [ ] |
+| Keyboard disconnect/reconnect | [ ] | [ ] | [ ] | [ ] |
+| Sleep then resume | [ ] | [ ] | [ ] | [ ] |
+| Default → UAC secure → Default | [ ] | [ ] | [ ] | [ ] |
+| Default → Lock → Unlock → Default | [ ] | [ ] | [ ] | [ ] |
+| Logon desktop, when Windows starts the registered AT | [ ] | [ ] | [ ] | [ ] |
+
+- [ ] `numflow-secure.exe` never opens the main window, tray, or HUD.
+- [ ] Default runtime logs `hook_active=false` while the protected desktop owns input.
+- [ ] Secure runtime exits after the protected desktop loses input.
+- [ ] Installer repair updates both AT records.
+- [ ] Uninstall removes both AT records without stale `StartExe` paths.
+- [ ] Installed executable signatures and MSI signature validate against the intended publisher.
+- [ ] Installed production build reports `at_registered=true` and `uiaccess=true` where expected.
+
 ## Packaging and Phase 12
 
 - [x] Generate production Windows application icon resources from `assets/numflow-icon.svg`.

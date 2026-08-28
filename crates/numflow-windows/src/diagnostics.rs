@@ -5,7 +5,7 @@ use windows::{
         Foundation::{CloseHandle, HANDLE, HWND},
         Security::{
             GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_ELEVATION,
-            TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenElevation, TokenIntegrityLevel,
+            TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenElevation, TokenIntegrityLevel, TokenUIAccess,
         },
         System::Threading::{
             GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
@@ -67,6 +67,33 @@ pub fn foreground_process_info_for_window(window: HWND) -> Option<ForegroundProc
 #[must_use]
 pub fn current_process_elevated() -> Option<bool> {
     process_security(unsafe { GetCurrentProcess() }).0
+}
+
+#[must_use]
+pub fn current_process_integrity() -> Option<&'static str> {
+    process_security(unsafe { GetCurrentProcess() }).1
+}
+
+#[must_use]
+pub fn current_process_ui_access() -> Option<bool> {
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }.ok()?;
+
+    let mut ui_access = 0_u32;
+    let mut return_length = 0;
+    let result = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUIAccess,
+            Some((&raw mut ui_access).cast()),
+            u32::try_from(size_of::<u32>()).ok()?,
+            &raw mut return_length,
+        )
+    }
+    .ok()
+    .map(|()| ui_access != 0);
+    let _ = unsafe { CloseHandle(token) };
+    result
 }
 
 fn process_name(process: HANDLE) -> Option<String> {

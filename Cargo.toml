@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/numflow-core", "crates/numflow-windows"]
+members = ["crates/numflow-core", "crates/numflow-secure", "crates/numflow-windows"]
 resolver = "3"
 
 [package]

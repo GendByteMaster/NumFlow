@@ -1,4 +1,7 @@
-use std::mem::size_of;
+use std::{
+    mem::size_of,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use numflow_core::{MouseButton, PointerBackend};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -6,6 +9,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput,
 };
+
+static MOUSE_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[must_use]
+pub fn mouse_hold_active() -> bool {
+    MOUSE_HOLD_ACTIVE.load(Ordering::Acquire)
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PointerError {
@@ -48,6 +58,10 @@ impl PressedButtons {
     fn clear(&mut self) {
         self.0 = 0;
     }
+
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 #[derive(Debug, Default)]
@@ -80,6 +94,7 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&[mouse_input(0, 0, button_down_flag(button))])?;
         self.pressed.insert(button);
+        MOUSE_HOLD_ACTIVE.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -90,6 +105,7 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&[mouse_input(0, 0, button_up_flag(button))])?;
         self.pressed.remove(button);
+        MOUSE_HOLD_ACTIVE.store(!self.pressed.is_empty(), Ordering::Release);
         Ok(())
     }
 
@@ -111,6 +127,7 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&inputs)?;
         self.pressed.clear();
+        MOUSE_HOLD_ACTIVE.store(false, Ordering::Release);
         Ok(())
     }
 }

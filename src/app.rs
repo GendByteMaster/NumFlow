@@ -377,7 +377,29 @@ fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     if let Err(error) = store.save(&config) {
         tracing::error!(%error, path = %store.path().display(), "failed to save NumFlow configuration");
     }
+    sync_secure_desktop_settings(&settings.borrow());
 }
+
+#[cfg(windows)]
+fn sync_secure_desktop_settings(settings: &UiSettings) {
+    if !numflow_windows::assistive_technology_registered() {
+        return;
+    }
+    let runtime = settings.runtime_config();
+    let secure = numflow_windows::SecureSettings {
+        enabled: settings.enabled(),
+        motion: runtime.motion,
+        selected_button: runtime.selected_button,
+        precision: runtime.precision,
+        bindings: runtime.bindings,
+    };
+    if let Err(error) = secure.store_for_locked_desktop() {
+        tracing::warn!(%error, "failed to update the bounded secure-desktop settings snapshot");
+    }
+}
+
+#[cfg(not(windows))]
+fn sync_secure_desktop_settings(_settings: &UiSettings) {}
 
 fn runtime_apply(runtime: &SharedRuntime, action: InputAction) {
     if let Err(error) = runtime.borrow().apply(action) {
@@ -981,6 +1003,7 @@ fn start_runtime_event_bridge(
             if let Some(tray) = weak_tray.upgrade() {
                 sync_tray_from_settings(&tray, &settings.borrow());
             }
+            sync_secure_desktop_settings(&settings.borrow());
         }
         if config_changed {
             persist_configuration(&settings, &store);
@@ -1066,6 +1089,7 @@ pub fn run(background: bool) -> Result<(), AppError> {
     }
 
     let settings = Rc::new(RefCell::new(UiSettings::from_config(loaded.config)));
+    sync_secure_desktop_settings(&settings.borrow());
 
     // Install the low-level keyboard hook and apply the current Num Lock mode before creating
     // any visible NumFlow UI. Once the tray icon appears, keyboard interception is already ready.

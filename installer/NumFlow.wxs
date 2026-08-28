@@ -22,6 +22,43 @@
               WorkingDirectory="INSTALLFOLDER" />
           </File>
         </Component>
+        <Component Id="NumFlowSecureExecutable" Guid="*">
+          <File Id="NumFlowSecureExe" Source="$(NumFlowSecureExe)" KeyPath="yes" />
+        </Component>
+        <Component Id="NumFlowAssistiveTechnologyRegistration" Guid="*">
+          <RegistryKey
+            Root="HKLM"
+            Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Accessibility\ATs\GendByteMaster_NumFlow_v1"
+            ForceDeleteOnUninstall="yes">
+            <RegistryValue Name="ApplicationName" Type="string" Value="@[INSTALLFOLDER]numflow.exe,-100" />
+            <RegistryValue Name="Description" Type="string" Value="@[INSTALLFOLDER]numflow.exe,-101" />
+            <RegistryValue Name="ATExe" Type="string" Value="numflow.exe" />
+            <RegistryValue Name="StartExe" Type="string" Value="[INSTALLFOLDER]numflow.exe" />
+            <RegistryValue Name="StartParams" Type="string" Value="--background --at-runtime" />
+            <RegistryValue Name="Profile" Type="string" Value="&lt;HCIModel&gt;&lt;Accommodation type=&quot;mild dexterity&quot;/&gt;&lt;Accommodation type=&quot;severe dexterity&quot;/&gt;&lt;/HCIModel&gt;" />
+            <RegistryValue Name="SimpleProfile" Type="string" Value="Mouse keyboard" />
+            <RegistryValue Name="SecureDesktopAccommodation" Type="string" Value="GendByteMaster_NumFlowSecure_v1" />
+            <RegistryValue Name="CopySettingsToLockedDesktop" Type="integer" Value="1" />
+            <RegistryValue Name="PassiveAutoStartBehavior" Type="integer" Value="1" />
+            <RegistryValue Name="TerminateOnDesktopSwitch" Type="integer" Value="0" KeyPath="yes" />
+          </RegistryKey>
+          <RegistryKey
+            Root="HKLM"
+            Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Accessibility\ATs\GendByteMaster_NumFlowSecure_v1"
+            ForceDeleteOnUninstall="yes">
+            <RegistryValue Name="ApplicationName" Type="string" Value="@[INSTALLFOLDER]numflow.exe,-100" />
+            <RegistryValue Name="Description" Type="string" Value="@[INSTALLFOLDER]numflow.exe,-101" />
+            <RegistryValue Name="ATExe" Type="string" Value="numflow-secure.exe" />
+            <RegistryValue Name="StartExe" Type="string" Value="[INSTALLFOLDER]numflow-secure.exe" />
+            <RegistryValue Name="StartParams" Type="string" Value="--secure-runtime" />
+            <RegistryValue Name="Profile" Type="string" Value="&lt;HCIModel&gt;&lt;Accommodation type=&quot;mild dexterity&quot;/&gt;&lt;Accommodation type=&quot;severe dexterity&quot;/&gt;&lt;/HCIModel&gt;" />
+            <RegistryValue Name="SimpleProfile" Type="string" Value="Mouse keyboard" />
+            <RegistryValue Name="SecureDesktopAccommodation" Type="string" Value="none" />
+            <RegistryValue Name="CopySettingsToLockedDesktop" Type="integer" Value="1" />
+            <RegistryValue Name="PassiveAutoStartBehavior" Type="integer" Value="1" />
+            <RegistryValue Name="TerminateOnDesktopSwitch" Type="integer" Value="0" />
+          </RegistryKey>
+        </Component>
       </Directory>
     </StandardDirectory>
 
@@ -29,6 +66,8 @@
 
     <Feature Id="MainFeature" Title="NumFlow" Level="1">
       <ComponentRef Id="NumFlowExecutable" />
+      <ComponentRef Id="NumFlowSecureExecutable" />
+      <ComponentRef Id="NumFlowAssistiveTechnologyRegistration" />
     </Feature>
   </Package>
 </Wix>

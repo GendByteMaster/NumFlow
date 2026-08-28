@@ -3071,6 +3071,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "numflow-secure"
+version = "0.1.0"
+dependencies = [
+ "numflow-windows",
+ "winresource",
+]
+
+[[package]]
 name = "numflow-windows"
 version = "0.1.0"
 dependencies = [

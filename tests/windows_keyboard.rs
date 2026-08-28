@@ -116,6 +116,7 @@ fn input_resync_reasons_have_stable_diagnostic_labels() {
         ),
         (InputResyncReason::HookFailure, "hook-failure"),
         (InputResyncReason::NumLockChanged, "numlock-changed"),
+        (InputResyncReason::DesktopSwitch, "desktop-switch"),
     ];
 
     for (reason, label) in reasons {
