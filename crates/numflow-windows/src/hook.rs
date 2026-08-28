@@ -81,6 +81,8 @@ static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
 static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static RESUME_NUM_LOCK_GUARD: AtomicBool = AtomicBool::new(false);
+static SESSION_LOCK_PENDING: AtomicBool = AtomicBool::new(false);
+static RESUME_WINDOWS_NUM_LOCK_MISMATCH: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static HOOK_GENERATION: AtomicU32 = AtomicU32::new(0);
 
@@ -598,6 +600,7 @@ fn handle_suspend_notification() {
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
     RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
+    RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(false, Ordering::Release);
 
     let cleanup = KeyboardHookEvent::NumLockChanged {
         num_lock_on: true,
@@ -615,7 +618,6 @@ fn handle_resume_notification(
 ) -> bool {
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
-    RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
     eprintln!("NumFlow: resume {} detected", phase.label());
 
     let hook_restored = match restore_keyboard_hook(module, hook) {
@@ -648,8 +650,36 @@ fn handle_resume_notification(
         "NumFlow: NumLock resume state (tracked={tracked_num_lock_on}, source=physical-history)"
     );
 
-    resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase);
+    let session_lock_pending = SESSION_LOCK_PENDING.load(Ordering::Acquire);
+    let finalize_guard = resume_guard_should_finalize(phase, session_lock_pending);
+    let sync_windows =
+        finalize_guard && RESUME_WINDOWS_NUM_LOCK_MISMATCH.swap(false, Ordering::AcqRel);
+
+    resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase, sync_windows);
+
+    if finalize_guard {
+        RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
+        if matches!(
+            phase,
+            ResumePhase::SessionUnlock | ResumePhase::DesktopReady
+        ) {
+            SESSION_LOCK_PENDING.store(false, Ordering::Release);
+        }
+        eprintln!(
+            "NumFlow: resume NumLock lifecycle guard cleared (phase={}, tracked={tracked_num_lock_on})",
+            phase.label()
+        );
+    }
+
     hook_restored
+}
+
+fn resume_guard_should_finalize(phase: ResumePhase, session_lock_pending: bool) -> bool {
+    match phase {
+        ResumePhase::Automatic => false,
+        ResumePhase::User => !session_lock_pending,
+        ResumePhase::SessionUnlock | ResumePhase::DesktopReady => true,
+    }
 }
 
 fn reconcile_raw_keyboard_after_resume() {
@@ -658,7 +688,12 @@ fn reconcile_raw_keyboard_after_resume() {
     }
 }
 
-fn resync_runtime_num_lock(hook_restored: bool, num_lock_on: bool, phase: ResumePhase) {
+fn resync_runtime_num_lock(
+    hook_restored: bool,
+    num_lock_on: bool,
+    phase: ResumePhase,
+    sync_windows: bool,
+) {
     // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
     // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
     // the tracked Num Lock/NumFlow mode. Resume never replaces that mode with `GetKeyState` from the
@@ -671,7 +706,7 @@ fn resync_runtime_num_lock(hook_restored: bool, num_lock_on: bool, phase: Resume
     };
     let restore = KeyboardHookEvent::NumLockChanged {
         num_lock_on,
-        sync_system: false,
+        sync_system: sync_windows,
         play_feedback: false,
     };
     let delivered = dispatch_lifecycle_events(&[cleanup, restore]);
@@ -749,6 +784,10 @@ fn queue_session_notification(reason: u32) {
 
     if reason == WTS_SESSION_LOCK {
         SESSION_RESUME_STAGE.store(SESSION_STAGE_IDLE, Ordering::Release);
+        SESSION_LOCK_PENDING.store(true, Ordering::Release);
+        RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
+        RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(false, Ordering::Release);
+        NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
         lifecycle_log("session lock detected");
         return;
     }
@@ -896,9 +935,6 @@ fn num_lock_transition(
 }
 
 fn observe_num_lock(state: KeyState) -> Option<bool> {
-    // A real Num Lock transition is explicit user/system intent and supersedes any resume-time
-    // semantic guard. Tagged NumFlow replay events are filtered before reaching this function.
-    RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
     let current = NUM_LOCK_ON.load(Ordering::Acquire);
     let key_down = NUM_LOCK_KEY_DOWN.load(Ordering::Acquire);
     let (next, next_key_down, changed) = num_lock_transition(current, key_down, state);
@@ -923,6 +959,23 @@ fn dispatch_num_lock_change(
     sync_system: bool,
     play_feedback: bool,
 ) -> Option<bool> {
+    if RESUME_NUM_LOCK_GUARD.load(Ordering::Acquire) {
+        if state == KeyState::Pressed {
+            if sync_system {
+                eprintln!(
+                    "NumFlow: NumLock transition suppressed while resume lifecycle is frozen"
+                );
+            } else {
+                let previous = RESUME_WINDOWS_NUM_LOCK_MISMATCH.fetch_xor(true, Ordering::AcqRel);
+                eprintln!(
+                    "NumFlow: external NumLock transition suppressed during frozen resume lifecycle (windows_mismatch={} -> {})",
+                    previous, !previous
+                );
+            }
+        }
+        return None;
+    }
+
     let changed = observe_num_lock(state);
     if let Some(num_lock_on) = changed {
         let _ = dispatch_event(
@@ -975,7 +1028,7 @@ fn infer_num_lock_from_numpad(event: PhysicalKeyEvent) -> Option<bool> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NumpadModeReconcileAction {
     AcceptObserved,
-    ClearResumeGuard,
+    PreserveTracked,
     PreserveTrackedAndSyncWindows,
 }
 
@@ -988,7 +1041,7 @@ fn numpad_mode_reconcile_action(
         return NumpadModeReconcileAction::AcceptObserved;
     }
     if tracked_num_lock_on == observed_num_lock_on {
-        NumpadModeReconcileAction::ClearResumeGuard
+        NumpadModeReconcileAction::PreserveTracked
     } else {
         NumpadModeReconcileAction::PreserveTrackedAndSyncWindows
     }
@@ -1007,8 +1060,9 @@ fn reconcile_num_lock_from_numpad(event: PhysicalKeyEvent) {
     );
 
     match action {
-        NumpadModeReconcileAction::ClearResumeGuard => {
-            RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
+        NumpadModeReconcileAction::PreserveTracked => {
+            INTERCEPTION_ENABLED.store(!tracked_num_lock_on, Ordering::Release);
+            RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(false, Ordering::Release);
         }
         NumpadModeReconcileAction::PreserveTrackedAndSyncWindows => {
             // During the lock-screen -> interactive-desktop transition Windows can temporarily
@@ -1018,16 +1072,9 @@ fn reconcile_num_lock_from_numpad(event: PhysicalKeyEvent) {
             // normal runtime path to replay one tagged Num Lock toggle back to Windows. The same
             // physical NumPad event can still be handled immediately in NumFlow pointer mode.
             INTERCEPTION_ENABLED.store(!tracked_num_lock_on, Ordering::Release);
+            RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(true, Ordering::Release);
             eprintln!(
-                "NumFlow: resume NumLock semantic mismatch (tracked={tracked_num_lock_on}, observed={observed_num_lock_on}); preserving tracked mode and resyncing Windows"
-            );
-            let _ = dispatch_event(
-                KeyboardHookEvent::NumLockChanged {
-                    num_lock_on: tracked_num_lock_on,
-                    sync_system: true,
-                    play_feedback: false,
-                },
-                true,
+                "NumFlow: resume NumLock semantic mismatch (tracked={tracked_num_lock_on}, observed={observed_num_lock_on}); preserving tracked mode and deferring Windows resync until lifecycle finalization"
             );
         }
         NumpadModeReconcileAction::AcceptObserved => {
@@ -1175,7 +1222,7 @@ mod tests {
         WM_NUMFLOW_SUSPEND, WTS_SESSION_DESKTOP_READY_REASON, hook_is_already_gone,
         infer_num_lock_from_numpad, num_lock_replay_inputs, num_lock_transition,
         numpad_mode_reconcile_action, ordered_power_notification, ordered_session_notification,
-        power_notification_message, raw_keyboard_removal_device,
+        power_notification_message, raw_keyboard_removal_device, resume_guard_should_finalize,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
@@ -1363,15 +1410,35 @@ mod tests {
     }
 
     #[test]
-    fn resume_numpad_match_clears_guard_without_changing_mode() {
+    fn resume_numpad_match_preserves_guard_until_lifecycle_finalization() {
         assert_eq!(
             numpad_mode_reconcile_action(false, false, true),
-            NumpadModeReconcileAction::ClearResumeGuard
+            NumpadModeReconcileAction::PreserveTracked
         );
         assert_eq!(
             numpad_mode_reconcile_action(true, true, true),
-            NumpadModeReconcileAction::ClearResumeGuard
+            NumpadModeReconcileAction::PreserveTracked
         );
+    }
+
+    #[test]
+    fn locked_resume_guard_only_finalizes_at_session_or_desktop_ready() {
+        assert!(!resume_guard_should_finalize(ResumePhase::Automatic, true));
+        assert!(!resume_guard_should_finalize(ResumePhase::User, true));
+        assert!(resume_guard_should_finalize(
+            ResumePhase::SessionUnlock,
+            true
+        ));
+        assert!(resume_guard_should_finalize(
+            ResumePhase::DesktopReady,
+            true
+        ));
+    }
+
+    #[test]
+    fn unlocked_power_resume_guard_finalizes_at_user_phase() {
+        assert!(!resume_guard_should_finalize(ResumePhase::Automatic, false));
+        assert!(resume_guard_should_finalize(ResumePhase::User, false));
     }
 
     #[test]
