@@ -14,7 +14,11 @@ NumFlow v0.1 is in active development on `dev/master`.
 
 The main application path is already wired end to end: global NumPad capture, background pointer runtime, time-based motion, mouse-button selection/click/drag behaviour, Slint settings UI, HUD feedback, profiles, custom bindings, persistent configuration, tray lifecycle, startup registration, single-instance protection, and fail-safe pointer release.
 
-Num Lock is the global mode switch. NumFlow owns the physical Num Lock key while running: Num Lock On leaves the NumPad available for normal numeric input, while Num Lock Off activates NumFlow pointer control. The mode changes immediately in the background without restarting the application. A short asynchronous cue distinguishes NumFlow On from NumFlow Off.
+Num Lock is the global mode switch. NumFlow observes the physical Num Lock edge while running and
+lets Windows own the actual toggle/LED: Num Lock On leaves the NumPad available for normal numeric
+input, while Num Lock Off activates NumFlow pointer control. The mode changes immediately in the
+background without restarting the application. A short asynchronous cue distinguishes NumFlow On
+from NumFlow Off.
 
 Recent reliability work also removed high-frequency idle polling from the background runtime. The worker now sleeps until input or a command arrives while motion is idle, and the Slint bridge uses event-driven wakeups instead of a fixed UI polling timer.
 
@@ -23,9 +27,9 @@ Recent reliability work also removed high-frequency idle polling from the backgr
 ## Current capabilities
 
 - Global Windows NumPad input through `WH_KEYBOARD_LL`.
-- Physical Num Lock interception as the NumFlow mode switch.
+- Physical Num Lock observation as the NumFlow mode switch.
 - Num Lock On → normal NumPad numeric input; Num Lock Off → NumFlow pointer control.
-- Tagged `SendInput` replay keeps Windows Num Lock state/LED synchronized without double-toggling NumFlow.
+- Tagged `SendInput` replay is used only for explicit UI requests and deferred lifecycle repair.
 - Separate non-blocking audio cues for NumFlow On and NumFlow Off.
 - Pointer movement and mouse-button injection through `SendInput`.
 - Smooth time-based movement with acceleration and diagonal normalization.
@@ -162,10 +166,13 @@ NumFlow treats input interception and drag state as safety-critical:
 
 - the keyboard hook callback does not perform blocking application work;
 - the physical keyboard queue is bounded and uses non-blocking delivery from the hook callback;
-- physical Num Lock presses are consumed by NumFlow;
-- NumFlow replays a tagged synthetic Num Lock press only to synchronize Windows toggle state/LED;
+- physical Num Lock presses are observed by NumFlow and passed through to Windows, so Windows owns
+  the actual toggle state and LED;
+- NumFlow uses a tagged synthetic Num Lock press only for explicit mode requests or deferred
+  lifecycle repair;
 - NumFlow ignores its own replay in the hook, preventing recursive/double mode changes;
-- if Num Lock replay fails, that physical key sequence falls back to Windows passthrough until key-up;
+- physical Num Lock never depends on a deferred replay, so UIPI or a transitioning input desktop
+  cannot leave the OS toggle and NumFlow mode split;
 - audio playback runs on a separate bounded worker and never blocks the keyboard hook;
 - the runtime command queue is bounded;
 - interception starts disabled until the application runtime is ready;
@@ -185,7 +192,7 @@ GitHub Actions runs the Windows quality gate on `dev/master` using Rust `1.98`:
 3. `cargo test --locked --workspace --all-features`
 4. `cargo build --locked --workspace --release --all-features`
 
-The Phase 11 idle-runtime change passed the full gate with 78 tests (30 application, 30 core, 18 Windows) before delivery to `dev/master`. The physical Num Lock interception change also passed the full Windows quality gate after implementation.
+The current Windows quality gate runs 98 deterministic tests (43 application, 37 Windows backend, 12 portable core black-box, and 6 Windows keyboard black-box) plus 1 explicitly ignored interactive hook smoke test. Real Sleep/Unlock, device reconnect, focus, and integrity scenarios remain manual release checks; see [`docs/TESTING.md`](docs/TESTING.md).
 
 ## v0.1 work still open
 
@@ -209,9 +216,15 @@ NumFlow uses the Win32 `SendInput` API for simulated pointer movement, mouse-but
 
 `SendInput` does not reliably report that UIPI was the specific reason an injection was blocked, so this limitation must not be treated as a random pointer-backend failure. NumFlow should run without elevation by default; elevation is not a general workaround and is outside the v0.1 default design.
 
+Task Manager is commonly elevated. NumFlow logs the foreground executable, target integrity/elevation, hook callback count, and the failed injection so this case is distinguishable from a dead `WH_KEYBOARD_LL` listener. Reinstalling the hook cannot cross UIPI. Run `numflow.exe --elevated` to start the explicit UAC-approved profile when elevated-window control is required. The ordinary tray/background profile remains non-elevated. A no-prompt production accessibility profile instead requires a properly signed, securely installed `uiAccess` build.
+
+Close an already running non-elevated NumFlow instance before starting `--elevated`; singleton ownership intentionally prevents medium- and high-integrity hooks from running together.
+
 ## Platform direction
 
 NumFlow v0.1 is Windows-first, and Windows is the only supported release platform today. **Linux and macOS support is planned for future versions.** The core is intentionally kept platform-independent so future platform backends can reuse the state machine, bindings, motion engine, and application architecture instead of duplicating the product logic.
+
+The backend contract and current Windows/Linux/macOS boundaries are documented in [`docs/PLATFORM_BACKENDS.md`](docs/PLATFORM_BACKENDS.md). Linux and macOS currently fail explicitly because their permission-aware global capture implementations are not complete; they are not represented by the Windows hook or a silent no-op.
 
 ## License
 

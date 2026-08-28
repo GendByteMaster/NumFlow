@@ -21,10 +21,10 @@ The Phase 11 idle-runtime change delivered to `dev/master` passed the Windows qu
 - [x] keyboard-hook event queue bounded and hook delivery non-blocking
 - [x] startup interception race fixed so interception is not enabled before runtime readiness
 - [x] Num Lock mode switching implemented in the global hook
-- [x] physical Num Lock interception implemented
+- [x] physical Num Lock observation implemented
 - [x] tagged Num Lock `SendInput` replay implemented to preserve Windows toggle/LED state
 - [x] Num Lock autorepeat is suppressed by edge-state tracking
-- [x] replay failure has physical-key passthrough fallback until key-up
+- [x] physical Num Lock is always passed through; it does not depend on a deferred replay
 - [x] separate asynchronous audio cues implemented for NumFlow On/Off
 - [x] Num Lock interception change passed formatting, Clippy, tests, and release build on Windows CI
 
@@ -77,7 +77,8 @@ For every scaling level verify:
 
 - [ ] Start NumFlow while Windows Num Lock is On and confirm NumFlow starts Off for pointer interception.
 - [ ] Start NumFlow while Windows Num Lock is Off and confirm NumFlow starts On for pointer interception.
-- [ ] Physical Num Lock press is consumed by NumFlow rather than passed through directly.
+- [ ] Physical Num Lock press is observed by NumFlow and passed through while runtime mode changes
+      immediately from the same hook edge.
 - [ ] Num Lock On → NumPad `0–9` enter ordinary digits in a text editor.
 - [ ] Num Lock Off → NumPad controls the system cursor.
 - [ ] Windows Num Lock LED/toggle state follows every successful NumFlow mode switch.
@@ -91,7 +92,8 @@ For every scaling level verify:
 - [ ] Mode audio does not introduce noticeable keyboard/input delay.
 - [ ] Audio worker remains stable during rapid Num Lock toggling.
 - [ ] Externally injected Num Lock input is not consumed and NumFlow mirrors the resulting mode change.
-- [ ] Replay failure fallback does not leave Num Lock logically stuck or desynchronized.
+- [ ] Explicit UI/lifecycle replay failure leaves NumFlow in a safe disabled/recovering state and
+      reports the target integrity/UIPI diagnostic.
 - [ ] Switching Num Lock On during movement stops NumFlow pointer interception immediately.
 - [ ] Switching Num Lock On during hold/drag safely releases the held mouse button.
 - [ ] key-down/key-up remains correct during rapid NumPad input.

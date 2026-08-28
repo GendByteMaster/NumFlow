@@ -78,7 +78,7 @@ It must not depend on Win32 or Slint APIs.
 `numflow-windows` owns platform integration:
 
 - `WH_KEYBOARD_LL` global keyboard hook;
-- physical Num Lock interception and tagged replay;
+- physical Num Lock observation and tagged replay for explicit synchronization;
 - NumPad key mapping and normalization;
 - asynchronous mode-switch audio feedback;
 - `SendInput` pointer injection;
@@ -170,23 +170,22 @@ Num Lock is the authoritative global mode switch while NumFlow is running:
 ```text
 physical Num Lock press
         ↓
-WH_KEYBOARD_LL consumes the physical event
+WH_KEYBOARD_LL observes the edge and updates NumFlow mode immediately
         ↓
-NumFlow toggles runtime mode immediately
+Windows processes the same physical event and owns Num Lock state + LED
         ↓
 NumLockChanged event → runtime/UI/audio
-        ↓
-tagged SendInput replay updates Windows Num Lock state + LED
 ```
 
 Required behaviour:
 
 - Num Lock On → NumFlow pointer interception is disabled and NumPad keys are available for ordinary numeric input;
 - Num Lock Off → NumFlow pointer interception is enabled and the NumPad controls the system cursor;
-- the physical Num Lock key itself is consumed by NumFlow;
+- the physical Num Lock key is passed through; Windows remains the owner of its actual toggle state;
 - NumFlow's own injected replay is identified by a private `dwExtraInfo` tag and must pass through without re-entering the mode state machine;
 - injected Num Lock input from other software is not consumed, but NumFlow mirrors that state change;
-- if replay injection fails, NumFlow falls back to passing that physical Num Lock sequence through Windows until key-up so the OS toggle state is not left desynchronized;
+- explicit UI/lifecycle synchronization reports a failed `SendInput` instead of pretending that
+  Windows accepted the requested toggle;
 - key autorepeat must not toggle the mode more than once per physical press;
 - switching to Num Lock On must immediately stop interception and then let the runtime safely release any held mouse-button state;
 - the mode switch must work while the settings window is unfocused/minimized.
@@ -219,9 +218,10 @@ The following invariants should remain true after every change:
 
 - disabled NumFlow does not intentionally move the pointer;
 - Num Lock On means NumFlow does not intercept ordinary NumPad number entry;
-- physical Num Lock interception never causes a recursive/double toggle;
+- physical Num Lock handling never causes a recursive/double toggle;
 - Windows Num Lock state/LED remains synchronized with NumFlow mode in the normal replay path;
-- replay failure falls back to physical passthrough instead of silently swallowing the system toggle;
+- physical toggles are always passed through; explicit replay failure is reported and leaves the
+  runtime in a safe state instead of silently claiming synchronization;
 - interception is not enabled before the runtime is ready;
 - hook callback work remains non-blocking apart from the minimal synchronous `SendInput` replay needed to preserve immediate Num Lock semantics;
 - audio playback never blocks the hook;
@@ -255,13 +255,27 @@ Manual accessibility validation is still required before v0.1 release.
 
 ### Num Lock
 
-NumFlow owns the physical Num Lock key while running. The `WH_KEYBOARD_LL` hook consumes the physical key sequence and toggles NumFlow state on the first key-down edge only. A tagged synthetic Num Lock down/up pair is then sent through `SendInput` so Windows updates its normal Num Lock state and keyboard LED. NumFlow recognizes that replay and does not feed it back into the mode state machine.
+NumFlow observes the physical Num Lock key with `WH_KEYBOARD_LL`, toggles runtime mode on the first
+key-down edge, and then passes the original event to Windows. This makes Windows the owner of the
+actual Num Lock toggle and LED, with no deferred replay window. A tagged synthetic Num Lock down/up
+pair is reserved for explicit UI requests and lifecycle repair; NumFlow recognizes that replay and
+does not feed it back into the mode state machine.
 
-The backend still maps the physical NumPad path rather than relying only on logical key names. Automated transition/replay tests exist, but real Num Lock On/Off behaviour, LED synchronization, background operation, rapid toggling, external injected Num Lock events, and replay fallback remain part of the manual release matrix.
+The backend still maps the physical NumPad path rather than relying only on logical key names. Automated transition/replay tests exist, but real Num Lock On/Off behaviour, LED synchronization, background operation, rapid toggling, external injected Num Lock events, and explicit UI/lifecycle replay failure handling remain part of the manual release matrix.
 
 ### UIPI / elevated applications
 
 `SendInput` is subject to Windows User Interface Privilege Isolation. A normal NumFlow process may be unable to inject input into an elevated application. This is an OS security boundary, not a reason to run NumFlow elevated by default.
+
+Task Manager is therefore a diagnostic target, not a reason to reinstall hooks. Foreground changes
+log the target executable/integrity/elevation and pointer injection failures log the same target
+context. `numflow.exe --elevated` starts the explicit UAC-approved elevated profile. The default
+tray/background profile remains non-elevated. A no-prompt deployment must ship a signed binary from
+a secure location with an appropriate `uiAccess` manifest. Neither profile can control the secure
+desktop.
+
+See `docs/PLATFORM_BACKENDS.md` for the shared backend contract and the separate Windows, Linux,
+and macOS permission/input architecture.
 
 ### Startup registration
 
@@ -285,6 +299,13 @@ Any new action should be considered across:
 ## Testing principles
 
 Prefer deterministic tests for core behaviour. Real pointer movement is not required to validate acceleration/state-machine math.
+
+Black-box behavior tests live in the repository-level `tests/` directory. The portable core
+contract is covered by `tests/core_behavior.rs`; Windows keyboard mapping and normalization are
+covered by `tests/windows_keyboard.rs`; and explicitly ignored interactive hook smoke tests live
+in `tests/windows_system.rs`. Private runtime, Win32 message-ordering, pointer-structure, and UI
+helper tests remain beside their implementation so production visibility is not widened for tests.
+See [`TESTING.md`](TESTING.md) for the environment classes and manual regression matrix.
 
 High-value automated areas include:
 
