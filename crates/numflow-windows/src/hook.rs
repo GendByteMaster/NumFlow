@@ -55,7 +55,12 @@ const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
 const WM_NUMFLOW_SUSPEND: u32 = WM_APP + 0x4E1;
 const WM_NUMFLOW_RESUME_AUTOMATIC: u32 = WM_APP + 0x4E2;
 const WM_NUMFLOW_RESUME_USER: u32 = WM_APP + 0x4E3;
+const RESUME_STAGE_IDLE: u32 = 0;
+const RESUME_STAGE_AUTOMATIC: u32 = 1;
+const RESUME_STAGE_USER: u32 = 2;
 
+static POWER_NOTIFICATION_ORDER: Mutex<()> = Mutex::new(());
+static POWER_RESUME_STAGE: AtomicU32 = AtomicU32::new(RESUME_STAGE_IDLE);
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
@@ -344,6 +349,7 @@ fn hook_thread(
     }
 
     HOOK_THREAD_ID.store(thread_id, Ordering::Release);
+    POWER_RESUME_STAGE.store(RESUME_STAGE_IDLE, Ordering::Release);
     let power_registration = match register_suspend_resume_notifications() {
         Ok(registration) => registration,
         Err(error) => {
@@ -588,20 +594,55 @@ fn power_notification_message(event_type: u32) -> Option<u32> {
     }
 }
 
+fn ordered_power_notification(stage: u32, event_type: u32) -> (u32, Option<u32>) {
+    match event_type {
+        PBT_APMSUSPEND => (RESUME_STAGE_IDLE, Some(WM_NUMFLOW_SUSPEND)),
+        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMECRITICAL if stage >= RESUME_STAGE_USER => {
+            (stage, None)
+        }
+        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMECRITICAL => (
+            stage.max(RESUME_STAGE_AUTOMATIC),
+            Some(WM_NUMFLOW_RESUME_AUTOMATIC),
+        ),
+        PBT_APMRESUMESUSPEND => (RESUME_STAGE_USER, Some(WM_NUMFLOW_RESUME_USER)),
+        _ => (stage, None),
+    }
+}
+
 unsafe extern "system" fn power_notification_callback(
     _context: *const c_void,
     event_type: u32,
     _setting: *const c_void,
 ) -> u32 {
-    let Some(message) = power_notification_message(event_type) else {
+    // RegisterSuspendResumeNotification callback mode can invoke callbacks independently of the
+    // hook thread. Serialize the callback-to-message bridge so the documented resume phases cannot
+    // be reordered by concurrent callback scheduling. Once the user-visible phase has been queued,
+    // a delayed automatic callback from the same resume cycle is stale and must not regress the
+    // final hook/runtime state.
+    let Ok(_order_guard) = POWER_NOTIFICATION_ORDER.lock() else {
         return 0;
     };
+
+    let stage = POWER_RESUME_STAGE.load(Ordering::Acquire);
+    let (next_stage, message) = ordered_power_notification(stage, event_type);
+    let Some(message) = message else {
+        if matches!(event_type, PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMECRITICAL)
+            && stage >= RESUME_STAGE_USER
+        {
+            eprintln!("NumFlow: stale automatic resume callback ignored after user resume");
+        }
+        return 0;
+    };
+
     let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
     if thread_id == 0 {
         return 0;
     }
 
-    let _ = unsafe { PostThreadMessageW(thread_id, message, WPARAM(0), LPARAM(0)) };
+    match unsafe { PostThreadMessageW(thread_id, message, WPARAM(0), LPARAM(0)) } {
+        Ok(()) => POWER_RESUME_STAGE.store(next_stage, Ordering::Release),
+        Err(error) => eprintln!("NumFlow: failed to queue power lifecycle message: {error}"),
+    }
     0
 }
 
@@ -906,9 +947,10 @@ mod tests {
 
     use super::{
         HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
-        NUMFLOW_NUM_LOCK_INJECTION_TAG, ResumePhase, WM_NUMFLOW_RESUME_AUTOMATIC,
-        WM_NUMFLOW_RESUME_USER, WM_NUMFLOW_SUSPEND, hook_is_already_gone,
-        infer_num_lock_from_numpad, num_lock_replay_inputs, num_lock_transition,
+        NUMFLOW_NUM_LOCK_INJECTION_TAG, RESUME_STAGE_AUTOMATIC, RESUME_STAGE_IDLE,
+        RESUME_STAGE_USER, ResumePhase, WM_NUMFLOW_RESUME_AUTOMATIC, WM_NUMFLOW_RESUME_USER,
+        WM_NUMFLOW_SUSPEND, hook_is_already_gone, infer_num_lock_from_numpad,
+        num_lock_replay_inputs, num_lock_transition, ordered_power_notification,
         power_notification_message, raw_keyboard_removal_device,
     };
     use crate::{KeyState, PhysicalKeyEvent};
@@ -947,6 +989,29 @@ mod tests {
     fn user_resume_is_the_phase_that_refreshes_windows_num_lock_state() {
         assert!(!ResumePhase::Automatic.should_refresh_num_lock());
         assert!(ResumePhase::User.should_refresh_num_lock());
+    }
+
+    #[test]
+    fn user_resume_prevents_delayed_automatic_phase_regression() {
+        let (stage, message) = ordered_power_notification(RESUME_STAGE_IDLE, PBT_APMRESUMESUSPEND);
+        assert_eq!(stage, RESUME_STAGE_USER);
+        assert_eq!(message, Some(WM_NUMFLOW_RESUME_USER));
+
+        let (stage, message) = ordered_power_notification(stage, PBT_APMRESUMEAUTOMATIC);
+        assert_eq!(stage, RESUME_STAGE_USER);
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn automatic_then_user_resume_keeps_monotonic_phase_order() {
+        let (stage, message) =
+            ordered_power_notification(RESUME_STAGE_IDLE, PBT_APMRESUMEAUTOMATIC);
+        assert_eq!(stage, RESUME_STAGE_AUTOMATIC);
+        assert_eq!(message, Some(WM_NUMFLOW_RESUME_AUTOMATIC));
+
+        let (stage, message) = ordered_power_notification(stage, PBT_APMRESUMESUSPEND);
+        assert_eq!(stage, RESUME_STAGE_USER);
+        assert_eq!(message, Some(WM_NUMFLOW_RESUME_USER));
     }
 
     #[test]
