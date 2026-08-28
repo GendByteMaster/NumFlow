@@ -14,6 +14,7 @@ All notable user-facing changes to NumFlow are tracked here.
 - WiX Toolset 4 Windows x64 MSI packaging.
 - Portable Windows x64 ZIP packaging and SHA-256 release checksums.
 - GitHub Actions Windows distribution pipeline for release pull requests and version tags.
+- Event-driven Windows suspend/resume recovery documentation covering hook re-arming, Raw Input reconciliation, Num Lock resynchronization, diagnostics, and manual lifecycle validation.
 
 ### Changed
 
@@ -27,3 +28,4 @@ All notable user-facing changes to NumFlow are tracked here.
 - Num Lock and UI enabled-state synchronization.
 - Glass material contrast and HUD background artifacts.
 - UI sound attenuation and persistent runtime volume control.
+- NumPad responsiveness after Windows Sleep/Hibernate by restoring `WH_KEYBOARD_LL` from Windows power events, reconciling Raw Input, clearing stale movement/hold state, and resynchronizing Num Lock without timer-based recovery delays.
