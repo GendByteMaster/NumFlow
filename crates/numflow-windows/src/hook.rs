@@ -61,6 +61,7 @@ static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
 static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+static HOOK_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHookEvent {
@@ -376,7 +377,10 @@ fn hook_thread(
 }
 
 fn install_keyboard_hook(module: HINSTANCE) -> Result<HHOOK, WindowsError> {
-    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), Some(module), 0) }
+    let hook =
+        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_proc), Some(module), 0) }?;
+    HOOK_GENERATION.fetch_add(1, Ordering::AcqRel);
+    Ok(hook)
 }
 
 fn register_suspend_resume_notifications() -> Result<HPOWERNOTIFY, HookError> {
@@ -421,9 +425,27 @@ fn restore_keyboard_hook(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumePhase {
+    Automatic,
+    User,
+}
+
+impl ResumePhase {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::User => "user",
+        }
+    }
+
+    const fn should_refresh_num_lock(self) -> bool {
+        matches!(self, Self::User)
+    }
+}
+
 fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), HookError> {
     let mut message = MSG::default();
-    let mut automatic_resume_result = None;
 
     loop {
         let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
@@ -434,22 +456,15 @@ fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), H
         }
 
         match message.message {
-            WM_NUMFLOW_SUSPEND => {
-                automatic_resume_result = None;
-                handle_suspend_notification();
-            }
+            WM_NUMFLOW_SUSPEND => handle_suspend_notification(),
             WM_NUMFLOW_RESUME_AUTOMATIC => {
-                automatic_resume_result = Some(handle_resume_notification(module, hook));
+                let _ = handle_resume_notification(module, hook, ResumePhase::Automatic);
             }
             WM_NUMFLOW_RESUME_USER => {
-                // Windows normally emits RESUMEAUTOMATIC first and RESUMESUSPEND when the user
-                // becomes active. Use the latter as an event-driven retry if re-arming failed, and
-                // always reconcile winit Raw Input once more after the interactive session returns.
-                if automatic_resume_result == Some(true) {
-                    reconcile_raw_keyboard_after_resume();
-                } else {
-                    automatic_resume_result = Some(handle_resume_notification(module, hook));
-                }
+                // PBT_APMRESUMESUSPEND is the late/user-visible phase. Always re-arm again here,
+                // even when the earlier automatic resume installed a hook successfully: a valid
+                // HHOOK handle is not a liveness proof after the remaining power transition.
+                let _ = handle_resume_notification(module, hook, ResumePhase::User);
             }
             _ => {}
         }
@@ -469,24 +484,48 @@ fn handle_suspend_notification() {
     lifecycle_log("suspend detected");
 }
 
-fn handle_resume_notification(module: HINSTANCE, hook: &mut Option<HHOOK>) -> bool {
+fn handle_resume_notification(
+    module: HINSTANCE,
+    hook: &mut Option<HHOOK>,
+    phase: ResumePhase,
+) -> bool {
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
-    lifecycle_log("resume detected");
+    eprintln!("NumFlow: resume {} detected", phase.label());
 
     let hook_restored = match restore_keyboard_hook(module, hook) {
         Ok(()) => {
-            lifecycle_log("hook restored");
+            eprintln!(
+                "NumFlow: hook restored (phase={}, generation={})",
+                phase.label(),
+                HOOK_GENERATION.load(Ordering::Acquire)
+            );
             true
         }
         Err(error) => {
-            eprintln!("NumFlow: hook restore failed: {error}");
+            eprintln!(
+                "NumFlow: hook restore failed (phase={}): {error}",
+                phase.label()
+            );
             false
         }
     };
 
     reconcile_raw_keyboard_after_resume();
-    resync_runtime_num_lock(hook_restored);
+
+    let cached_num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+    let effective_num_lock_on = if phase.should_refresh_num_lock() {
+        let windows_num_lock_on = read_windows_num_lock_state();
+        NUM_LOCK_ON.store(windows_num_lock_on, Ordering::Release);
+        eprintln!(
+            "NumFlow: NumLock resume state (cached={cached_num_lock_on}, windows={windows_num_lock_on}, effective={windows_num_lock_on})"
+        );
+        windows_num_lock_on
+    } else {
+        cached_num_lock_on
+    };
+
+    resync_runtime_num_lock(hook_restored, effective_num_lock_on, phase);
     hook_restored
 }
 
@@ -496,12 +535,16 @@ fn reconcile_raw_keyboard_after_resume() {
     }
 }
 
-fn resync_runtime_num_lock(hook_restored: bool) {
-    let num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+fn read_windows_num_lock_state() -> bool {
+    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
+    key_state & 1 != 0
+}
 
+fn resync_runtime_num_lock(hook_restored: bool, num_lock_on: bool, phase: ResumePhase) {
     // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
     // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
-    // the authoritative pre-suspend Num Lock/NumFlow mode. No sleep or polling is involved.
+    // the effective Num Lock/NumFlow mode. The late user phase refreshes that mode from Windows.
+    // No sleep or polling is involved.
     let cleanup = KeyboardHookEvent::NumLockChanged {
         num_lock_on: true,
         sync_system: false,
@@ -522,8 +565,10 @@ fn resync_runtime_num_lock(hook_restored: bool) {
 
     if delivered {
         eprintln!(
-            "NumFlow: NumLock resynced (num_lock_on={num_lock_on}, numflow_enabled={})",
-            !num_lock_on
+            "NumFlow: NumLock resynced (phase={}, num_lock_on={num_lock_on}, numflow_enabled={}, interception={})",
+            phase.label(),
+            !num_lock_on,
+            INTERCEPTION_ENABLED.load(Ordering::Acquire)
         );
     } else {
         eprintln!("NumFlow: NumLock resync event could not be delivered");
@@ -861,10 +906,10 @@ mod tests {
 
     use super::{
         HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
-        NUMFLOW_NUM_LOCK_INJECTION_TAG, WM_NUMFLOW_RESUME_AUTOMATIC, WM_NUMFLOW_RESUME_USER,
-        WM_NUMFLOW_SUSPEND, hook_is_already_gone, infer_num_lock_from_numpad,
-        num_lock_replay_inputs, num_lock_transition, power_notification_message,
-        raw_keyboard_removal_device,
+        NUMFLOW_NUM_LOCK_INJECTION_TAG, ResumePhase, WM_NUMFLOW_RESUME_AUTOMATIC,
+        WM_NUMFLOW_RESUME_USER, WM_NUMFLOW_SUSPEND, hook_is_already_gone,
+        infer_num_lock_from_numpad, num_lock_replay_inputs, num_lock_transition,
+        power_notification_message, raw_keyboard_removal_device,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
@@ -896,6 +941,12 @@ mod tests {
             Some(WM_NUMFLOW_RESUME_USER)
         );
         assert_eq!(power_notification_message(u32::MAX), None);
+    }
+
+    #[test]
+    fn user_resume_is_the_phase_that_refreshes_windows_num_lock_state() {
+        assert!(!ResumePhase::Automatic.should_refresh_num_lock());
+        assert!(ResumePhase::User.should_refresh_num_lock());
     }
 
     #[test]
