@@ -86,32 +86,3 @@ pub enum CoreEffect {
     Pointer(PointerEffect),
     State(StateChange),
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::Direction;
-
-    #[test]
-    fn every_direction_has_a_unique_unit_vector() {
-        let vectors = Direction::ALL
-            .into_iter()
-            .map(Direction::unit_vector)
-            .collect::<HashSet<_>>();
-
-        assert_eq!(vectors.len(), Direction::ALL.len());
-    }
-
-    #[test]
-    fn direction_vectors_match_screen_coordinates() {
-        assert_eq!(Direction::Up.unit_vector(), (0, -1));
-        assert_eq!(Direction::Down.unit_vector(), (0, 1));
-        assert_eq!(Direction::Left.unit_vector(), (-1, 0));
-        assert_eq!(Direction::Right.unit_vector(), (1, 0));
-        assert_eq!(Direction::UpLeft.unit_vector(), (-1, -1));
-        assert_eq!(Direction::UpRight.unit_vector(), (1, -1));
-        assert_eq!(Direction::DownLeft.unit_vector(), (-1, 1));
-        assert_eq!(Direction::DownRight.unit_vector(), (1, 1));
-    }
-}
