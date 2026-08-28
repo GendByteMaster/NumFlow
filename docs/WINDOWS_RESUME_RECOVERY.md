@@ -6,16 +6,17 @@ The implementation is Windows-specific and lives in `crates/numflow-windows`. It
 
 ## Problem
 
-NumFlow uses a global `WH_KEYBOARD_LL` hook on a dedicated Win32 message-loop thread. Real Windows hardware testing exposed several lifecycle failure modes:
+NumFlow uses a global `WH_KEYBOARD_LL` hook on a dedicated Win32 message-loop thread. Real Windows hardware testing exposed several independent lifecycle failure modes:
 
 1. a low-level hook cannot be assumed to remain usable after Sleep/Hibernate, and Windows provides no reliable liveness query for an existing `HHOOK`;
 2. `PBT_APMRESUMEAUTOMATIC` may arrive before the interactive desktop is fully usable;
 3. callback-mode power notifications can be delivered out of the expected automatic/user order;
 4. Slint/winit Raw Input keyboard registration must be reconciled again after resume;
 5. power resume alone is earlier than session unlock / desktop readiness on some systems;
-6. `GetKeyState(VK_NUMLOCK)` is message-queue based. Reading it from NumFlow's background hook thread after resume can lag behind the foreground application and overwrite a correct tracked NumFlow mode with a stale value.
+6. `GetKeyState(VK_NUMLOCK)` is message-queue based, so reading it from NumFlow's background hook thread after resume can lag behind the foreground application;
+7. the keyboard/session transition can emit Num Lock or NumPad semantics before the interactive desktop is fully stable. Treating those transient events as user intent can change `NUM_LOCK_ON` between the user power phase and `WTS_SESSION_UNLOCK`.
 
-The last case was reproduced on real hardware: the tracked state was already `Num Lock Off` / NumFlow enabled, while the background-thread `GetKeyState` snapshot still reported `Num Lock On`. Recovery then incorrectly produced `numflow_enabled=false, interception=false`, especially when another application owned foreground focus.
+The last two cases were reproduced on real hardware. In one failure, the tracked state was already `Num Lock Off` / NumFlow enabled while a background-thread Windows snapshot reported `Num Lock On`. In a later failure, user recovery correctly restored `tracked=false`, but a Num Lock transition arriving before session unlock changed the tracked state to `true`; session-unlock then faithfully restored the wrong mode and produced `numflow_enabled=false, interception=false`.
 
 ## Design goals
 
@@ -26,6 +27,7 @@ Lifecycle recovery must remain:
 - safe against duplicate hooks;
 - safe against out-of-order power callbacks;
 - independent of which application owns foreground focus;
+- safe against transient Num Lock / NumPad semantics during lock-screen-to-desktop transition;
 - safe for active movement and drag/hold state;
 - compatible with tray/HUD/background operation;
 - compatible with `Start with Windows` and `--background`;
@@ -45,7 +47,7 @@ Handled events:
 
 | Windows event | NumFlow action |
 | --- | --- |
-| `PBT_APMSUSPEND` | enter fail-safe suspend state and reset lifecycle ordering |
+| `PBT_APMSUSPEND` | enter fail-safe suspend state and begin the frozen-mode recovery transaction |
 | `PBT_APMRESUMEAUTOMATIC` | provisional early re-arm |
 | `PBT_APMRESUMECRITICAL` | provisional early re-arm |
 | `PBT_APMRESUMESUSPEND` | late/user-visible power re-arm |
@@ -64,8 +66,8 @@ The hook thread also owns a hidden Win32 **message-only window** (`HWND_MESSAGE`
 
 `WM_WTSSESSION_CHANGE` is translated into private hook-thread lifecycle messages. NumFlow handles:
 
-- `WTS_SESSION_LOCK` — reset the session-recovery cycle;
-- `WTS_SESSION_UNLOCK` — perform a fresh session-level re-arm;
+- `WTS_SESSION_LOCK` — mark the session as locked, reset the session-recovery cycle, and freeze the currently tracked NumFlow mode;
+- `WTS_SESSION_UNLOCK` — perform a fresh session-level hook re-arm and finalize the frozen-mode transaction;
 - desktop-ready reason `0x0F` when delivered — perform another final desktop-level re-arm.
 
 This keeps the runtime global and event-driven without introducing Tokio, polling, or a visible helper window.
@@ -78,17 +80,19 @@ When suspend is detected NumFlow:
 
 1. disables NumPad interception;
 2. clears the tracked Num Lock key-down edge state;
-3. sends a fail-safe lifecycle event through the existing runtime path;
-4. resets transient input state;
-5. stops pointer motion;
-6. releases a NumFlow-owned held mouse button;
-7. records `suspend detected` in diagnostics.
+3. enables the resume Num Lock lifecycle guard;
+4. clears any pending Windows-toggle mismatch from an older recovery cycle;
+5. sends a fail-safe lifecycle event through the existing runtime path;
+6. resets transient input state;
+7. stops pointer motion;
+8. releases a NumFlow-owned held mouse button;
+9. records `suspend detected` in diagnostics.
 
 The authoritative tracked `NUM_LOCK_ON` toggle value itself is preserved across the suspend transition.
 
 ## Resume recovery
 
-Every recovery phase uses the same deterministic sequence:
+Every recovery phase uses the same deterministic hook sequence:
 
 ```text
 resume/session signal
@@ -103,7 +107,7 @@ reconcile process Raw Input keyboard registration
         ↓
 clear stale runtime input work
         ↓
-restore tracked Num Lock / NumFlow mode
+restore frozen/tracked Num Lock / NumFlow mode
         ↓
 restore interception only after successful recovery
 ```
@@ -121,43 +125,75 @@ A valid stored `HHOOK` is not treated as proof that the hook still works. Each p
 
 This ordering intentionally prevents NumFlow from creating two live global keyboard hooks.
 
-## Foreground-independent Num Lock / NumFlow state
+## Lifecycle-frozen Num Lock / NumFlow mode
 
 The mode relation remains:
 
 - Num Lock On → NumFlow pointer interception Off;
 - Num Lock Off → NumFlow pointer interception On.
 
-Resume recovery **does not use `GetKeyState(VK_NUMLOCK)` as its mode authority**.
+Resume recovery **does not use `GetKeyState(VK_NUMLOCK)` as its mode authority**. It also no longer allows the first keyboard semantic observed during recovery to become the authority by itself.
+
+The tracked `NUM_LOCK_ON` value at suspend/session-lock time is treated as the desired mode for the current recovery transaction:
+
+```text
+tracked NUM_LOCK_ON before/at suspend
+        ↓
+RESUME_NUM_LOCK_GUARD = true
+        ↓
+automatic power recovery
+        ↓
+user power recovery
+        ↓
+[transient Num Lock / NumPad events cannot replace tracked mode]
+        ↓
+WTS_SESSION_UNLOCK / desktop-ready
+        ↓
+restore tracked mode + optional tagged Windows resync
+        ↓
+clear lifecycle guard
+```
+
+If a `WTS_SESSION_LOCK` was observed, the guard remains active through the user power phase and is finalized only at `session-unlock` or `desktop-ready`.
+
+If no session lock was observed, the user power phase is the fallback finalization point so the guard cannot remain active indefinitely on systems where WTS lifecycle events are unavailable.
+
+### Num Lock transitions while recovery is frozen
+
+While the lifecycle guard is active, a Num Lock transition is **not** allowed to mutate `NUM_LOCK_ON` or `INTERCEPTION_ENABLED`.
+
+This is intentional. During lock-screen-to-desktop transition Windows, firmware, a keyboard driver, or another input source can produce a Num Lock transition before the interactive session is stable. Treating that event as definitive user intent caused the real-hardware `tracked=false → tracked=true` regression.
+
+NumFlow therefore suppresses that transition as a mode authority while the lifecycle transaction is frozen. If an external injected toggle implies that Windows may now differ from the tracked mode, NumFlow records the mismatch and performs one tagged Num Lock replay when the lifecycle guard is finalized.
+
+NumFlow's own tagged replay is still filtered from ordinary hook state tracking, so the repair cannot recursively toggle NumFlow's state.
+
+### NumPad semantics while recovery is frozen
+
+NumFlow inspects physical NumPad semantics reported by Windows:
+
+- digit VK + NumPad scan code → observed Num Lock On semantics;
+- navigation VK + the same physical NumPad scan code → observed Num Lock Off semantics.
+
+Outside lifecycle recovery this remains a strong reconciliation signal and can repair stale startup/runtime state.
+
+During lifecycle recovery the policy is different:
+
+- observed semantics matching the tracked mode → preserve the tracked mode and keep the guard active;
+- observed semantics conflicting with the tracked mode → preserve the tracked mode, keep interception aligned with it, record a Windows mismatch, and defer Windows resync until lifecycle finalization;
+- the NumPad event can still be handled immediately as NumFlow input when pointer mode is frozen On.
+
+Input therefore cannot prematurely clear the lifecycle guard.
+
+After the guard is finalized, ordinary physical/injected Num Lock transitions and ordinary NumPad semantic reconciliation work normally again.
+
+## Foreground independence
 
 `GetKeyState` reflects the calling thread's keyboard/message-queue state. NumFlow's hook thread is a background worker, so after Sleep/Resume its toggle bit can lag behind the application that currently owns foreground focus.
 
-Instead, recovery restores the mode already tracked from real Num Lock transitions:
+NumFlow therefore restores its frozen tracked mode regardless of whether NumFlow, Warp, a browser, an editor, a game, or another application owns foreground focus.
 
-```text
-NUM_LOCK_ON
-    ↓
-tracked resume authority
-    ↓
-NumLockChanged cleanup + restore
-    ↓
-INTERCEPTION_ENABLED = !NUM_LOCK_ON
-```
-
-This means returning from sleep while Warp, a browser, an editor, a game, or another application owns focus does not itself change NumFlow's mode.
-
-### Physical reconciliation remains authoritative for new input
-
-NumFlow already inspects the physical NumPad event semantics reported by Windows:
-
-- digit VK + NumPad scan code → Num Lock On;
-- navigation VK + the same physical NumPad scan code → Num Lock Off.
-
-Therefore the first physical NumPad event after resume can repair the tracked mode if Windows genuinely changed the toggle outside NumFlow's observable desktop/session.
-
-A physical or injected Num Lock transition observed by the global hook also updates the tracked state normally.
-
-This gives NumFlow a focus-independent resume policy without forcing the Windows LED/toggle to an assumed value.
+No settings-window focus change is required for recovery.
 
 ## Raw Input reconciliation
 
@@ -167,11 +203,16 @@ Removal is idempotent and repeated during each recovery phase. Raw mouse registr
 
 ## Diagnostics
 
-A typical recovery with NumFlow enabled (`Num Lock Off`) should include lines similar to:
+A typical locked Sleep/Resume cycle with NumFlow enabled (`Num Lock Off`) should keep `tracked=false` through all phases:
 
 ```text
 NumFlow: session lifecycle window registered
+NumFlow: session lock detected
 NumFlow: suspend detected
+NumFlow: resume automatic detected
+NumFlow: hook restored (phase=automatic, generation=...)
+NumFlow: NumLock resume state (tracked=false, source=physical-history)
+NumFlow: NumLock resynced (phase=automatic, num_lock_on=false, numflow_enabled=true, interception=true)
 NumFlow: resume user detected
 NumFlow: hook restored (phase=user, generation=...)
 NumFlow: NumLock resume state (tracked=false, source=physical-history)
@@ -180,6 +221,19 @@ NumFlow: resume session-unlock detected
 NumFlow: hook restored (phase=session-unlock, generation=...)
 NumFlow: NumLock resume state (tracked=false, source=physical-history)
 NumFlow: NumLock resynced (phase=session-unlock, num_lock_on=false, numflow_enabled=true, interception=true)
+NumFlow: resume NumLock lifecycle guard cleared (phase=session-unlock, tracked=false)
+```
+
+If Windows emits transient input during the frozen period, diagnostics may additionally include:
+
+```text
+NumFlow: NumLock transition suppressed while resume lifecycle is frozen
+```
+
+or:
+
+```text
+NumFlow: resume NumLock semantic mismatch (tracked=false, observed=true); preserving tracked mode and deferring Windows resync until lifecycle finalization
 ```
 
 If desktop-ready is delivered, another `phase=desktop-ready` re-arm may follow.
@@ -190,7 +244,7 @@ An out-of-order automatic callback after interactive recovery is suppressed:
 NumFlow: stale automatic resume callback ignored after user resume
 ```
 
-The important regression signal is that resume diagnostics must no longer contain a foreground-derived `cached=..., windows=..., effective=...` decision that disables NumFlow because the hook thread observed a stale toggle bit.
+The critical regression signal is that a locked resume must not change `tracked=false` into `tracked=true` before session-unlock merely because Windows emitted transient keyboard semantics.
 
 ## Safety invariants
 
@@ -201,7 +255,9 @@ Changes to this subsystem must preserve the following rules:
 - never allow delayed automatic power callbacks to regress interactive recovery;
 - use WTS/session signals as additional recovery points, not as an application-startup dependency;
 - never overwrite tracked NumFlow mode from background-thread `GetKeyState` during resume;
-- allow real physical NumPad semantics to reconcile external Num Lock changes;
+- when a session lock participates in the recovery cycle, do not let input clear the lifecycle mode guard before session-unlock/desktop-ready;
+- do not let transient Num Lock or NumPad semantics mutate the frozen mode during recovery;
+- outside recovery, keep ordinary Num Lock transitions and NumPad semantic reconciliation functional;
 - never keep stale pointer movement active across suspend/resume;
 - never keep a NumFlow-owned mouse hold latched across lifecycle cleanup;
 - do not rebuild or close tray/HUD/background runtime during recovery;
@@ -220,6 +276,10 @@ Current coverage includes:
 - monotonic automatic/user callback ordering;
 - WTS session unlock / desktop-ready ordering and coalescing;
 - session-lock recovery-cycle reset;
+- lifecycle guard finalization policy for locked vs. power-only resumes;
+- matching NumPad semantics preserving the guard during recovery;
+- mismatching NumPad semantics preserving tracked mode and requesting deferred Windows repair;
+- ordinary NumPad semantic reconciliation outside recovery;
 - safe already-retired-hook handling;
 - regression guard preventing a `GetKeyState` call inside the resume handler;
 - Raw Input removal descriptor behavior;
@@ -246,11 +306,12 @@ At minimum verify:
 2. Focus **another application**; do not leave the NumFlow settings window foreground.
 3. Enter Sleep, then resume.
 4. Without clicking or focusing NumFlow, immediately test NumPad pointer movement in the other application.
-5. Confirm diagnostics keep `tracked=false` and produce `numflow_enabled=true, interception=true` after user/session recovery.
-6. Repeat with NumFlow Off / Num Lock On and confirm ordinary number entry remains ordinary number entry.
-7. Repeat while a NumFlow drag/hold is active and confirm no mouse button remains stuck.
-8. Repeat multiple Sleep/Resume and Hibernate/Resume cycles.
-9. Test with the settings window closed/minimized and with `--background` startup.
-10. Confirm tray and HUD survive each cycle without opening the main window.
-11. Verify physical Num Lock toggling after resume still switches NumFlow immediately and keeps normal numeric mode usable.
-12. Verify multi-monitor and DPI scenarios separately before release approval.
+5. Confirm diagnostics keep `tracked=false` through automatic, user, and session-unlock recovery and produce `numflow_enabled=true, interception=true` at each restored phase.
+6. Confirm the lifecycle guard is cleared only after the appropriate final phase (`session-unlock`/`desktop-ready` for a locked cycle; user phase for power-only fallback).
+7. Repeat with NumFlow Off / Num Lock On and confirm ordinary number entry remains ordinary number entry after recovery completes.
+8. Immediately after recovery completes, toggle physical Num Lock and confirm normal mode switching still works.
+9. Repeat while a NumFlow drag/hold is active and confirm no mouse button remains stuck.
+10. Repeat multiple Sleep/Resume and Hibernate/Resume cycles.
+11. Test with the settings window closed/minimized and with `--background` startup.
+12. Confirm tray and HUD survive each cycle without opening the main window.
+13. Verify multi-monitor and DPI scenarios separately before release approval.
