@@ -554,10 +554,6 @@ impl ResumePhase {
             Self::DesktopReady => "desktop-ready",
         }
     }
-
-    const fn should_refresh_num_lock(self) -> bool {
-        !matches!(self, Self::Automatic)
-    }
 }
 
 fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), HookError> {
@@ -639,19 +635,17 @@ fn handle_resume_notification(
 
     reconcile_raw_keyboard_after_resume();
 
-    let cached_num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
-    let effective_num_lock_on = if phase.should_refresh_num_lock() {
-        let windows_num_lock_on = read_windows_num_lock_state();
-        NUM_LOCK_ON.store(windows_num_lock_on, Ordering::Release);
-        eprintln!(
-            "NumFlow: NumLock resume state (cached={cached_num_lock_on}, windows={windows_num_lock_on}, effective={windows_num_lock_on})"
-        );
-        windows_num_lock_on
-    } else {
-        cached_num_lock_on
-    };
+    // `GetKeyState` reflects the calling thread's message-queue state. The hook thread is a
+    // background worker, so after Sleep/Resume its toggle bit can lag behind the foreground app.
+    // Keep the state tracked from real Num Lock transitions as the resume authority instead of
+    // overwriting it with a foreground-dependent snapshot. The first physical NumPad event after
+    // resume independently reconciles the mode from the VK/scan-code semantics reported by Windows.
+    let tracked_num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+    eprintln!(
+        "NumFlow: NumLock resume state (tracked={tracked_num_lock_on}, source=physical-history)"
+    );
 
-    resync_runtime_num_lock(hook_restored, effective_num_lock_on, phase);
+    resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase);
     hook_restored
 }
 
@@ -661,15 +655,11 @@ fn reconcile_raw_keyboard_after_resume() {
     }
 }
 
-fn read_windows_num_lock_state() -> bool {
-    let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
-    key_state & 1 != 0
-}
-
 fn resync_runtime_num_lock(hook_restored: bool, num_lock_on: bool, phase: ResumePhase) {
     // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
     // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
-    // the effective Num Lock/NumFlow mode. User/session phases refresh that mode from Windows.
+    // the tracked Num Lock/NumFlow mode. Resume never replaces that mode with `GetKeyState` from the
+    // background hook thread; physical NumPad semantics reconcile any real external toggle later.
     // No sleep or polling is involved.
     let cleanup = KeyboardHookEvent::NumLockChanged {
         num_lock_on: true,
@@ -1158,11 +1148,11 @@ mod tests {
     }
 
     #[test]
-    fn non_automatic_resume_phases_refresh_windows_num_lock_state() {
-        assert!(!ResumePhase::Automatic.should_refresh_num_lock());
-        assert!(ResumePhase::User.should_refresh_num_lock());
-        assert!(ResumePhase::SessionUnlock.should_refresh_num_lock());
-        assert!(ResumePhase::DesktopReady.should_refresh_num_lock());
+    fn resume_phase_labels_cover_all_recovery_stages() {
+        assert_eq!(ResumePhase::Automatic.label(), "automatic");
+        assert_eq!(ResumePhase::User.label(), "user");
+        assert_eq!(ResumePhase::SessionUnlock.label(), "session-unlock");
+        assert_eq!(ResumePhase::DesktopReady.label(), "desktop-ready");
     }
 
     #[test]
