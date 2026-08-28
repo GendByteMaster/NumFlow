@@ -652,12 +652,11 @@ fn handle_resume_notification(
 
     let session_lock_pending = SESSION_LOCK_PENDING.load(Ordering::Acquire);
     let finalize_guard = resume_guard_should_finalize(phase, session_lock_pending);
-    let sync_windows =
-        finalize_guard && RESUME_WINDOWS_NUM_LOCK_MISMATCH.swap(false, Ordering::AcqRel);
-
-    resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase, sync_windows);
 
     if finalize_guard {
+        let sync_windows = RESUME_WINDOWS_NUM_LOCK_MISMATCH.swap(false, Ordering::AcqRel);
+        resync_runtime_num_lock(hook_restored, tracked_num_lock_on, phase, sync_windows);
+
         RESUME_NUM_LOCK_GUARD.store(false, Ordering::Release);
         if matches!(
             phase,
@@ -667,6 +666,17 @@ fn handle_resume_notification(
         }
         eprintln!(
             "NumFlow: resume NumLock lifecycle guard cleared (phase={}, tracked={tracked_num_lock_on})",
+            phase.label()
+        );
+    } else {
+        // Re-arm the keyboard hook early, but do not reactivate pointer injection before Windows
+        // has returned to an interactive session. Real hardware showed SendInput returning zero
+        // between the user-visible power callback and WTS_SESSION_UNLOCK. Keeping interception
+        // disabled here prevents a NumPad press on the transition/lock desktop from faulting the
+        // background pointer runtime.
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
+        eprintln!(
+            "NumFlow: pointer activation deferred (phase={}, session_lock_pending={session_lock_pending})",
             phase.label()
         );
     }
@@ -788,7 +798,20 @@ fn queue_session_notification(reason: u32) {
         RESUME_NUM_LOCK_GUARD.store(true, Ordering::Release);
         RESUME_WINDOWS_NUM_LOCK_MISMATCH.store(false, Ordering::Release);
         NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
-        lifecycle_log("session lock detected");
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
+
+        // Session lock can occur without a power suspend. Quiesce the runtime immediately so
+        // pointer motion and NumFlow-owned holds cannot continue onto the lock/secure desktop,
+        // while preserving NUM_LOCK_ON as the mode to restore after unlock.
+        let cleanup = KeyboardHookEvent::NumLockChanged {
+            num_lock_on: true,
+            sync_system: false,
+            play_feedback: false,
+        };
+        if !dispatch_lifecycle_events(&[cleanup]) {
+            eprintln!("NumFlow: session-lock runtime quiesce event could not be delivered");
+        }
+        lifecycle_log("session lock detected; pointer runtime quiesced");
         return;
     }
 

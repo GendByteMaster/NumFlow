@@ -462,6 +462,14 @@ mod platform {
             Ok(())
         }
 
+        fn recover_motion_injection_failure(&mut self) {
+            // Relative movement is stateless. A failed movement injection can happen transiently
+            // while the Windows input desktop is changing or when UIPI blocks the current target.
+            // Stop the active motion vector, but preserve controller/NumFlow enabled state so the
+            // next physical movement press can recover without restarting the application.
+            self.motion.stop();
+        }
+
         fn shutdown(&mut self) -> Result<Vec<CoreEffect>, B::Error> {
             self.motion.stop();
             self.pointer.release_all()?;
@@ -597,12 +605,10 @@ mod platform {
                         let elapsed = now.saturating_duration_since(previous_tick);
                         previous_tick = now;
                         if let Err(error) = machine.tick(elapsed) {
-                            fail_safe(
-                                &mut machine,
-                                &hook,
-                                &mut normalizer,
-                                event_sink,
-                                &error.to_string(),
+                            machine.recover_motion_injection_failure();
+                            tracing::warn!(
+                                %error,
+                                "NumFlow pointer movement injection failed; motion stopped without disabling runtime"
                             );
                         }
                     }
@@ -954,6 +960,21 @@ mod platform {
                 ),
                 MockPointer::default(),
             )
+        }
+
+        #[test]
+        fn motion_injection_failure_recovery_preserves_enabled_mode() {
+            let mut machine = runtime_machine();
+            apply_num_lock_mode(&mut machine, false).unwrap();
+            machine.motion.press(Direction::Right);
+
+            assert!(machine.enabled());
+            assert!(machine.motion.is_moving());
+
+            machine.recover_motion_injection_failure();
+
+            assert!(machine.enabled());
+            assert!(!machine.motion.is_moving());
         }
 
         #[test]
