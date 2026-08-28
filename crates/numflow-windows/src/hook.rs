@@ -14,13 +14,18 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use windows::{
     Win32::{
         Foundation::{
-            ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, LPARAM, LRESULT, WIN32_ERROR, WPARAM,
+            ERROR_CLASS_ALREADY_EXISTS, ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, HWND, LPARAM,
+            LRESULT, WIN32_ERROR, WPARAM,
         },
         System::{
             LibraryLoader::GetModuleHandleW,
             Power::{
                 DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY,
                 RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification,
+            },
+            RemoteDesktop::{
+                NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
+                WTSUnRegisterSessionNotification,
             },
             Threading::GetCurrentThreadId,
         },
@@ -33,15 +38,18 @@ use windows::{
                 RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, DEVICE_NOTIFY_CALLBACK, GetMessageW, HHOOK, KBDLLHOOKSTRUCT,
+                CallNextHookEx, CreateWindowExW, DEVICE_NOTIFY_CALLBACK, DefWindowProcW,
+                DestroyWindow, DispatchMessageW, GetMessageW, HHOOK, HWND_MESSAGE, KBDLLHOOKSTRUCT,
                 LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
                 PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_NOREMOVE, PeekMessageW,
-                PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
-                WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                PostThreadMessageW, RegisterClassW, SetWindowsHookExW, UnhookWindowsHookEx,
+                WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_KEYDOWN, WM_KEYUP,
+                WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_WTSSESSION_CHANGE, WNDCLASSW,
+                WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
             },
         },
     },
-    core::Error as WindowsError,
+    core::{Error as WindowsError, PCWSTR},
 };
 
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
@@ -55,12 +63,19 @@ const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
 const WM_NUMFLOW_SUSPEND: u32 = WM_APP + 0x4E1;
 const WM_NUMFLOW_RESUME_AUTOMATIC: u32 = WM_APP + 0x4E2;
 const WM_NUMFLOW_RESUME_USER: u32 = WM_APP + 0x4E3;
+const WM_NUMFLOW_SESSION_UNLOCK: u32 = WM_APP + 0x4E4;
+const WM_NUMFLOW_DESKTOP_READY: u32 = WM_APP + 0x4E5;
+const WTS_SESSION_DESKTOP_READY_REASON: u32 = 0x0F;
 const RESUME_STAGE_IDLE: u32 = 0;
 const RESUME_STAGE_AUTOMATIC: u32 = 1;
 const RESUME_STAGE_USER: u32 = 2;
+const SESSION_STAGE_IDLE: u32 = 0;
+const SESSION_STAGE_UNLOCK: u32 = 1;
+const SESSION_STAGE_DESKTOP_READY: u32 = 2;
 
 static POWER_NOTIFICATION_ORDER: Mutex<()> = Mutex::new(());
 static POWER_RESUME_STAGE: AtomicU32 = AtomicU32::new(RESUME_STAGE_IDLE);
+static SESSION_RESUME_STAGE: AtomicU32 = AtomicU32::new(SESSION_STAGE_IDLE);
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
@@ -350,6 +365,7 @@ fn hook_thread(
 
     HOOK_THREAD_ID.store(thread_id, Ordering::Release);
     POWER_RESUME_STAGE.store(RESUME_STAGE_IDLE, Ordering::Release);
+    SESSION_RESUME_STAGE.store(SESSION_STAGE_IDLE, Ordering::Release);
     let power_registration = match register_suspend_resume_notifications() {
         Ok(registration) => registration,
         Err(error) => {
@@ -361,8 +377,24 @@ fn hook_thread(
         }
     };
 
+    let session_window = match create_session_notification_window(module) {
+        Ok(hwnd) => {
+            eprintln!("NumFlow: session lifecycle window registered");
+            Some(hwnd)
+        }
+        Err(error) => {
+            eprintln!(
+                "NumFlow: session lifecycle notifications unavailable; using power-only recovery: {error}"
+            );
+            None
+        }
+    };
+
     if ready_sender.send(Ok(thread_id)).is_err() {
         HOOK_THREAD_ID.store(0, Ordering::Release);
+        if let Some(hwnd) = session_window {
+            cleanup_session_notification_window(hwnd);
+        }
         let _ = unsafe { UnregisterSuspendResumeNotification(power_registration) };
         clear_dispatcher();
         let _ = retire_keyboard_hook(&mut hook);
@@ -373,6 +405,9 @@ fn hook_thread(
 
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
     HOOK_THREAD_ID.store(0, Ordering::Release);
+    if let Some(hwnd) = session_window {
+        cleanup_session_notification_window(hwnd);
+    }
     let power_result = unsafe { UnregisterSuspendResumeNotification(power_registration) };
     clear_dispatcher();
     let unhook_result = retire_keyboard_hook(&mut hook);
@@ -398,6 +433,77 @@ fn register_suspend_resume_notifications() -> Result<HPOWERNOTIFY, HookError> {
 
     unsafe { RegisterSuspendResumeNotification(recipient, DEVICE_NOTIFY_CALLBACK) }
         .map_err(HookError::PowerNotification)
+}
+
+fn create_session_notification_window(module: HINSTANCE) -> Result<HWND, WindowsError> {
+    let class_name_utf16 = "NumFlowInputLifecycleWindow"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let class_name = PCWSTR(class_name_utf16.as_ptr());
+    let window_class = WNDCLASSW {
+        lpfnWndProc: Some(session_window_proc),
+        hInstance: module,
+        lpszClassName: class_name,
+        ..WNDCLASSW::default()
+    };
+
+    let atom = unsafe { RegisterClassW(&raw const window_class) };
+    if atom == 0 {
+        let error = WindowsError::from_thread();
+        if WIN32_ERROR::from_error(&error) != Some(ERROR_CLASS_ALREADY_EXISTS) {
+            return Err(error);
+        }
+    }
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class_name,
+            class_name,
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(module),
+            None,
+        )
+    }?;
+
+    if let Err(error) = unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) } {
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Err(error);
+    }
+
+    Ok(hwnd)
+}
+
+fn cleanup_session_notification_window(hwnd: HWND) {
+    if let Err(error) = unsafe { WTSUnRegisterSessionNotification(hwnd) } {
+        eprintln!("NumFlow: failed to unregister session lifecycle notifications: {error}");
+    }
+    if let Err(error) = unsafe { DestroyWindow(hwnd) } {
+        eprintln!("NumFlow: failed to destroy session lifecycle window: {error}");
+    }
+}
+
+unsafe extern "system" fn session_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_WTSSESSION_CHANGE {
+        if let Ok(reason) = u32::try_from(wparam.0) {
+            queue_session_notification(reason);
+        }
+        return LRESULT(0);
+    }
+
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
 fn retire_keyboard_hook(hook: &mut Option<HHOOK>) -> Result<(), WindowsError> {
@@ -435,6 +541,8 @@ fn restore_keyboard_hook(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<
 enum ResumePhase {
     Automatic,
     User,
+    SessionUnlock,
+    DesktopReady,
 }
 
 impl ResumePhase {
@@ -442,11 +550,13 @@ impl ResumePhase {
         match self {
             Self::Automatic => "automatic",
             Self::User => "user",
+            Self::SessionUnlock => "session-unlock",
+            Self::DesktopReady => "desktop-ready",
         }
     }
 
     const fn should_refresh_num_lock(self) -> bool {
-        matches!(self, Self::User)
+        !matches!(self, Self::Automatic)
     }
 }
 
@@ -467,12 +577,22 @@ fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), H
                 let _ = handle_resume_notification(module, hook, ResumePhase::Automatic);
             }
             WM_NUMFLOW_RESUME_USER => {
-                // PBT_APMRESUMESUSPEND is the late/user-visible phase. Always re-arm again here,
-                // even when the earlier automatic resume installed a hook successfully: a valid
-                // HHOOK handle is not a liveness proof after the remaining power transition.
+                // PBT_APMRESUMESUSPEND is the late/user-visible power phase. Re-arm here, then let
+                // WTS session notifications provide an even later desktop/session recovery point.
                 let _ = handle_resume_notification(module, hook, ResumePhase::User);
             }
-            _ => {}
+            WM_NUMFLOW_SESSION_UNLOCK => {
+                let _ = handle_resume_notification(module, hook, ResumePhase::SessionUnlock);
+            }
+            WM_NUMFLOW_DESKTOP_READY => {
+                let _ = handle_resume_notification(module, hook, ResumePhase::DesktopReady);
+            }
+            _ => {
+                // The hook thread now owns a message-only window for WM_WTSSESSION_CHANGE. Dispatch
+                // ordinary window messages so its WNDPROC can translate session lifecycle events
+                // into the private hook-thread recovery messages above.
+                let _ = unsafe { DispatchMessageW(&raw const message) };
+            }
         }
     }
 }
@@ -549,7 +669,7 @@ fn read_windows_num_lock_state() -> bool {
 fn resync_runtime_num_lock(hook_restored: bool, num_lock_on: bool, phase: ResumePhase) {
     // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
     // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
-    // the effective Num Lock/NumFlow mode. The late user phase refreshes that mode from Windows.
+    // the effective Num Lock/NumFlow mode. User/session phases refresh that mode from Windows.
     // No sleep or polling is involved.
     let cleanup = KeyboardHookEvent::NumLockChanged {
         num_lock_on: true,
@@ -597,7 +717,10 @@ fn power_notification_message(event_type: u32) -> Option<u32> {
 
 fn ordered_power_notification(stage: u32, event_type: u32) -> (u32, Option<u32>) {
     match event_type {
-        PBT_APMSUSPEND => (RESUME_STAGE_IDLE, Some(WM_NUMFLOW_SUSPEND)),
+        PBT_APMSUSPEND => {
+            SESSION_RESUME_STAGE.store(SESSION_STAGE_IDLE, Ordering::Release);
+            (RESUME_STAGE_IDLE, Some(WM_NUMFLOW_SUSPEND))
+        }
         PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMECRITICAL if stage >= RESUME_STAGE_USER => {
             (stage, None)
         }
@@ -607,6 +730,52 @@ fn ordered_power_notification(stage: u32, event_type: u32) -> (u32, Option<u32>)
         ),
         PBT_APMRESUMESUSPEND => (RESUME_STAGE_USER, Some(WM_NUMFLOW_RESUME_USER)),
         _ => (stage, None),
+    }
+}
+
+fn ordered_session_notification(stage: u32, reason: u32) -> (u32, Option<u32>) {
+    match reason {
+        WTS_SESSION_LOCK => (SESSION_STAGE_IDLE, None),
+        WTS_SESSION_UNLOCK if stage < SESSION_STAGE_UNLOCK => {
+            (SESSION_STAGE_UNLOCK, Some(WM_NUMFLOW_SESSION_UNLOCK))
+        }
+        WTS_SESSION_DESKTOP_READY_REASON if stage < SESSION_STAGE_DESKTOP_READY => {
+            (SESSION_STAGE_DESKTOP_READY, Some(WM_NUMFLOW_DESKTOP_READY))
+        }
+        _ => (stage, None),
+    }
+}
+
+fn queue_session_notification(reason: u32) {
+    let Ok(_order_guard) = POWER_NOTIFICATION_ORDER.lock() else {
+        return;
+    };
+
+    let stage = SESSION_RESUME_STAGE.load(Ordering::Acquire);
+    let (next_stage, message) = ordered_session_notification(stage, reason);
+
+    if reason == WTS_SESSION_LOCK {
+        SESSION_RESUME_STAGE.store(SESSION_STAGE_IDLE, Ordering::Release);
+        lifecycle_log("session lock detected");
+        return;
+    }
+
+    let Some(message) = message else {
+        return;
+    };
+    let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
+    if thread_id == 0 {
+        return;
+    }
+
+    match unsafe { PostThreadMessageW(thread_id, message, WPARAM(0), LPARAM(0)) } {
+        Ok(()) => {
+            SESSION_RESUME_STAGE.store(next_stage, Ordering::Release);
+            // Once the interactive session is available, a delayed automatic power callback from
+            // the same cycle is stale and must not regress the final session-level recovery.
+            POWER_RESUME_STAGE.fetch_max(RESUME_STAGE_USER, Ordering::AcqRel);
+        }
+        Err(error) => eprintln!("NumFlow: failed to queue session lifecycle message: {error}"),
     }
 }
 
@@ -939,7 +1108,7 @@ mod tests {
                 },
                 WindowsAndMessaging::{
                     PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND,
-                    PBT_APMSUSPEND,
+                    PBT_APMSUSPEND, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
                 },
             },
         },
@@ -949,10 +1118,12 @@ mod tests {
     use super::{
         HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
         NUMFLOW_NUM_LOCK_INJECTION_TAG, RESUME_STAGE_AUTOMATIC, RESUME_STAGE_IDLE,
-        RESUME_STAGE_USER, ResumePhase, WM_NUMFLOW_RESUME_AUTOMATIC, WM_NUMFLOW_RESUME_USER,
-        WM_NUMFLOW_SUSPEND, hook_is_already_gone, infer_num_lock_from_numpad,
+        RESUME_STAGE_USER, ResumePhase, SESSION_STAGE_DESKTOP_READY, SESSION_STAGE_IDLE,
+        SESSION_STAGE_UNLOCK, WM_NUMFLOW_DESKTOP_READY, WM_NUMFLOW_RESUME_AUTOMATIC,
+        WM_NUMFLOW_RESUME_USER, WM_NUMFLOW_SESSION_UNLOCK, WM_NUMFLOW_SUSPEND,
+        WTS_SESSION_DESKTOP_READY_REASON, hook_is_already_gone, infer_num_lock_from_numpad,
         num_lock_replay_inputs, num_lock_transition, ordered_power_notification,
-        power_notification_message, raw_keyboard_removal_device,
+        ordered_session_notification, power_notification_message, raw_keyboard_removal_device,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
@@ -987,9 +1158,11 @@ mod tests {
     }
 
     #[test]
-    fn user_resume_is_the_phase_that_refreshes_windows_num_lock_state() {
+    fn non_automatic_resume_phases_refresh_windows_num_lock_state() {
         assert!(!ResumePhase::Automatic.should_refresh_num_lock());
         assert!(ResumePhase::User.should_refresh_num_lock());
+        assert!(ResumePhase::SessionUnlock.should_refresh_num_lock());
+        assert!(ResumePhase::DesktopReady.should_refresh_num_lock());
     }
 
     #[test]
@@ -1013,6 +1186,39 @@ mod tests {
         let (stage, message) = ordered_power_notification(stage, PBT_APMRESUMESUSPEND);
         assert_eq!(stage, RESUME_STAGE_USER);
         assert_eq!(message, Some(WM_NUMFLOW_RESUME_USER));
+    }
+
+    #[test]
+    fn session_unlock_and_desktop_ready_are_ordered_and_coalesced() {
+        let (stage, message) = ordered_session_notification(SESSION_STAGE_IDLE, WTS_SESSION_UNLOCK);
+        assert_eq!(stage, SESSION_STAGE_UNLOCK);
+        assert_eq!(message, Some(WM_NUMFLOW_SESSION_UNLOCK));
+
+        let (stage, message) = ordered_session_notification(stage, WTS_SESSION_UNLOCK);
+        assert_eq!(stage, SESSION_STAGE_UNLOCK);
+        assert_eq!(message, None);
+
+        let (stage, message) =
+            ordered_session_notification(stage, WTS_SESSION_DESKTOP_READY_REASON);
+        assert_eq!(stage, SESSION_STAGE_DESKTOP_READY);
+        assert_eq!(message, Some(WM_NUMFLOW_DESKTOP_READY));
+
+        let (stage, message) =
+            ordered_session_notification(stage, WTS_SESSION_DESKTOP_READY_REASON);
+        assert_eq!(stage, SESSION_STAGE_DESKTOP_READY);
+        assert_eq!(message, None);
+    }
+
+    #[test]
+    fn session_lock_resets_session_recovery_cycle() {
+        let (stage, message) =
+            ordered_session_notification(SESSION_STAGE_DESKTOP_READY, WTS_SESSION_LOCK);
+        assert_eq!(stage, SESSION_STAGE_IDLE);
+        assert_eq!(message, None);
+
+        let (stage, message) = ordered_session_notification(stage, WTS_SESSION_UNLOCK);
+        assert_eq!(stage, SESSION_STAGE_UNLOCK);
+        assert_eq!(message, Some(WM_NUMFLOW_SESSION_UNLOCK));
     }
 
     #[test]
