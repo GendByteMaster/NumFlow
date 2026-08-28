@@ -29,3 +29,4 @@ All notable user-facing changes to NumFlow are tracked here.
 - Glass material contrast and HUD background artifacts.
 - UI sound attenuation and persistent runtime volume control.
 - NumPad responsiveness after Windows Sleep/Hibernate by restoring `WH_KEYBOARD_LL` from Windows power events, reconciling Raw Input, clearing stale movement/hold state, and resynchronizing Num Lock without timer-based recovery delays.
+- Resume callback ordering race observed on real Windows hardware: power callbacks are serialized and resume stages are monotonic, so a delayed `PBT_APMRESUMEAUTOMATIC` callback cannot regress an already-processed `PBT_APMRESUMESUSPEND` recovery.
