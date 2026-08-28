@@ -1,9 +1,10 @@
 use std::{
+    ffi::c_void,
     io,
     mem::size_of,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, SyncSender},
     },
     thread::{self, JoinHandle},
@@ -12,8 +13,17 @@ use std::{
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
-        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
+        Foundation::{
+            ERROR_INVALID_HOOK_HANDLE, HANDLE, HINSTANCE, LPARAM, LRESULT, WPARAM, WIN32_ERROR,
+        },
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Power::{
+                DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY,
+                RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification,
+            },
+            Threading::GetCurrentThreadId,
+        },
         UI::{
             Input::{
                 KeyboardAndMouse::{
@@ -23,10 +33,11 @@ use windows::{
                 RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, MSG,
-                PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-                UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
-                WM_SYSKEYUP,
+                CallNextHookEx, DEVICE_NOTIFY_CALLBACK, GetMessageW, HHOOK, KBDLLHOOKSTRUCT,
+                LLKHF_EXTENDED, LLKHF_INJECTED, MSG, PBT_APMRESUMEAUTOMATIC,
+                PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_NOREMOVE,
+                PeekMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+                WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
             },
         },
     },
@@ -36,14 +47,20 @@ use windows::{
 use crate::{KeyState, PhysicalKeyEvent, map_numpad_key};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 128;
+const MIN_LIFECYCLE_QUEUE_CAPACITY: usize = 2;
 const NUMFLOW_NUM_LOCK_INJECTION_TAG: usize = 0x4E46_4E4C;
 const NUM_LOCK_SCAN_CODE: u16 = 0x45;
 const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
 const HID_USAGE_GENERIC_KEYBOARD: u16 = 0x06;
+const WM_NUMFLOW_SUSPEND: u32 = WM_APP + 0x4E1;
+const WM_NUMFLOW_RESUME_AUTOMATIC: u32 = WM_APP + 0x4E2;
+const WM_NUMFLOW_RESUME_USER: u32 = WM_APP + 0x4E3;
+
 static EVENT_DISPATCHER: OnceLock<Mutex<Option<HookDispatcher>>> = OnceLock::new();
 static INTERCEPTION_ENABLED: AtomicBool = AtomicBool::new(false);
 static NUM_LOCK_ON: AtomicBool = AtomicBool::new(true);
 static NUM_LOCK_KEY_DOWN: AtomicBool = AtomicBool::new(false);
+static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardHookEvent {
@@ -69,6 +86,8 @@ pub enum HookError {
     ThreadSpawn(#[source] io::Error),
     #[error("failed to install WH_KEYBOARD_LL: {0}")]
     Install(#[source] WindowsError),
+    #[error("failed to register Windows suspend/resume notifications: {0}")]
+    PowerNotification(#[source] WindowsError),
     #[error("the Windows hook message loop failed: {0}")]
     MessageLoop(#[source] WindowsError),
     #[error("failed to stop the Windows hook thread: {0}")]
@@ -99,7 +118,7 @@ fn raw_keyboard_removal_device() -> RAWINPUTDEVICE {
 /// untouched.
 ///
 /// This function is intentionally idempotent and should run after Slint/winit has initialized its
-/// event loop.
+/// event loop. It is also safe to repeat after Windows resumes from sleep or hibernation.
 ///
 /// # Errors
 ///
@@ -128,26 +147,27 @@ impl KeyboardHook {
     /// # Errors
     ///
     /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
-    /// installed, another `NumFlow` hook is already active, or the hook thread exits before setup
-    /// completes.
+    /// installed, another `NumFlow` hook is already active, power notifications cannot be
+    /// registered, or the hook thread exits before setup completes.
     pub fn start() -> Result<(Self, Receiver<KeyboardHookEvent>), HookError> {
         Self::start_with_capacity(DEFAULT_QUEUE_CAPACITY)
     }
 
     /// Starts the global low-level keyboard hook with a bounded event queue.
     ///
-    /// A zero capacity request is normalized to a capacity of one so the hook callback never uses
-    /// a rendezvous channel that could block.
+    /// The queue has a minimum capacity of two. Resume recovery deliberately queues a transient
+    /// cleanup state followed by the authoritative Num Lock mode, and both events must remain
+    /// ordered without blocking the low-level hook callback.
     ///
     /// # Errors
     ///
     /// Returns [`HookError`] if the hook thread cannot be spawned, the Win32 hook cannot be
-    /// installed, another `NumFlow` hook is already active, or the hook thread exits before setup
-    /// completes.
+    /// installed, another `NumFlow` hook is already active, power notifications cannot be
+    /// registered, or the hook thread exits before setup completes.
     pub fn start_with_capacity(
         queue_capacity: usize,
     ) -> Result<(Self, Receiver<KeyboardHookEvent>), HookError> {
-        let capacity = queue_capacity.max(1);
+        let capacity = queue_capacity.max(MIN_LIFECYCLE_QUEUE_CAPACITY);
         let (event_sender, event_receiver) = crossbeam_channel::bounded(capacity);
         let event_overflow_reader = event_receiver.clone();
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
@@ -292,28 +312,24 @@ fn hook_thread(
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut message = MSG::default();
 
+    // A message queue must exist before the power callback can safely PostThreadMessageW to this
+    // worker.
     let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
+
     let key_state = unsafe { GetKeyState(i32::from(VK_NUMLOCK.0)) };
     NUM_LOCK_ON.store(key_state & 1 != 0, Ordering::Release);
     NUM_LOCK_KEY_DOWN.store(key_state < 0, Ordering::Release);
 
     let module = match unsafe { GetModuleHandleW(None) } {
-        Ok(module) => module,
+        Ok(module) => HINSTANCE(module.0),
         Err(error) => {
             let _ = ready_sender.send(Err(HookError::Install(error)));
             return Ok(());
         }
     };
 
-    let hook = match unsafe {
-        SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(keyboard_hook_proc),
-            Some(HINSTANCE(module.0)),
-            0,
-        )
-    } {
-        Ok(hook) => hook,
+    let mut hook = match install_keyboard_hook(module) {
+        Ok(hook) => Some(hook),
         Err(error) => {
             let _ = ready_sender.send(Err(HookError::Install(error)));
             return Ok(());
@@ -321,28 +337,105 @@ fn hook_thread(
     };
 
     if !register_dispatcher(event_sender, event_overflow_reader) {
-        let _ = unsafe { UnhookWindowsHookEx(hook) };
+        let _ = retire_keyboard_hook(&mut hook);
         let _ = ready_sender.send(Err(HookError::AlreadyActive));
         return Ok(());
     }
 
+    HOOK_THREAD_ID.store(thread_id, Ordering::Release);
+    let power_registration = match register_suspend_resume_notifications() {
+        Ok(registration) => registration,
+        Err(error) => {
+            HOOK_THREAD_ID.store(0, Ordering::Release);
+            clear_dispatcher();
+            let _ = retire_keyboard_hook(&mut hook);
+            let _ = ready_sender.send(Err(error));
+            return Ok(());
+        }
+    };
+
     if ready_sender.send(Ok(thread_id)).is_err() {
+        HOOK_THREAD_ID.store(0, Ordering::Release);
+        let _ = unsafe { UnregisterSuspendResumeNotification(power_registration) };
         clear_dispatcher();
-        let _ = unsafe { UnhookWindowsHookEx(hook) };
+        let _ = retire_keyboard_hook(&mut hook);
         return Ok(());
     }
 
-    let loop_result = run_message_loop();
+    let loop_result = run_message_loop(module, &mut hook);
+
     INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    HOOK_THREAD_ID.store(0, Ordering::Release);
+    let power_result = unsafe { UnregisterSuspendResumeNotification(power_registration) };
     clear_dispatcher();
-    let unhook_result = unsafe { UnhookWindowsHookEx(hook) };
+    let unhook_result = retire_keyboard_hook(&mut hook);
 
     loop_result?;
+    power_result.map_err(HookError::PowerNotification)?;
     unhook_result.map_err(HookError::Stop)
 }
 
-fn run_message_loop() -> Result<(), HookError> {
+fn install_keyboard_hook(module: HINSTANCE) -> Result<HHOOK, WindowsError> {
+    unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_hook_proc),
+            Some(module),
+            0,
+        )
+    }
+}
+
+fn register_suspend_resume_notifications() -> Result<HPOWERNOTIFY, HookError> {
+    let parameters = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+        Callback: Some(power_notification_callback),
+        Context: std::ptr::null_mut(),
+    };
+    let recipient = HANDLE(
+        std::ptr::from_ref(&parameters)
+            .cast::<c_void>()
+            .cast_mut(),
+    );
+
+    unsafe { RegisterSuspendResumeNotification(recipient, DEVICE_NOTIFY_CALLBACK) }
+        .map_err(HookError::PowerNotification)
+}
+
+fn retire_keyboard_hook(hook: &mut Option<HHOOK>) -> Result<(), WindowsError> {
+    let Some(active_hook) = *hook else {
+        return Ok(());
+    };
+
+    match unsafe { UnhookWindowsHookEx(active_hook) } {
+        Ok(()) => {
+            *hook = None;
+            Ok(())
+        }
+        Err(error) if hook_is_already_gone(&error) => {
+            *hook = None;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn hook_is_already_gone(error: &WindowsError) -> bool {
+    WIN32_ERROR::from_error(error) == Some(ERROR_INVALID_HOOK_HANDLE)
+}
+
+fn restore_keyboard_hook(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), WindowsError> {
+    // There is no reliable WH_KEYBOARD_LL liveness query. Windows may silently remove a low-level
+    // hook, so resume recovery always retires the old handle first. We only install a replacement
+    // after retirement is confirmed, which prevents two live NumFlow hooks from coexisting.
+    retire_keyboard_hook(hook)?;
+    *hook = Some(install_keyboard_hook(module)?);
+    Ok(())
+}
+
+fn run_message_loop(module: HINSTANCE, hook: &mut Option<HHOOK>) -> Result<(), HookError> {
     let mut message = MSG::default();
+    let mut automatic_resume_seen = false;
+    let mut hook_restored = true;
 
     loop {
         let result = unsafe { GetMessageW(&raw mut message, None, 0, 0) };
@@ -351,7 +444,134 @@ fn run_message_loop() -> Result<(), HookError> {
             0 => return Ok(()),
             _ => {}
         }
+
+        match message.message {
+            WM_NUMFLOW_SUSPEND => {
+                automatic_resume_seen = false;
+                hook_restored = true;
+                handle_suspend_notification();
+            }
+            WM_NUMFLOW_RESUME_AUTOMATIC => {
+                automatic_resume_seen = true;
+                hook_restored = handle_resume_notification(module, hook);
+            }
+            WM_NUMFLOW_RESUME_USER => {
+                // Windows normally emits RESUMEAUTOMATIC first and RESUMESUSPEND when the user
+                // becomes active. Use the latter as an event-driven retry if re-arming failed, and
+                // always reconcile winit Raw Input once more after the interactive session returns.
+                if automatic_resume_seen && hook_restored {
+                    reconcile_raw_keyboard_after_resume();
+                } else {
+                    hook_restored = handle_resume_notification(module, hook);
+                }
+            }
+            _ => {}
+        }
     }
+}
+
+fn handle_suspend_notification() {
+    INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
+
+    let cleanup = KeyboardHookEvent::NumLockChanged {
+        num_lock_on: true,
+        sync_system: false,
+        play_feedback: false,
+    };
+    let _ = dispatch_lifecycle_events(&[cleanup]);
+    lifecycle_log("suspend detected");
+}
+
+fn handle_resume_notification(module: HINSTANCE, hook: &mut Option<HHOOK>) -> bool {
+    INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    NUM_LOCK_KEY_DOWN.store(false, Ordering::Release);
+    lifecycle_log("resume detected");
+
+    let hook_restored = match restore_keyboard_hook(module, hook) {
+        Ok(()) => {
+            lifecycle_log("hook restored");
+            true
+        }
+        Err(error) => {
+            eprintln!("NumFlow: hook restore failed: {error}");
+            false
+        }
+    };
+
+    reconcile_raw_keyboard_after_resume();
+    resync_runtime_num_lock(hook_restored);
+    hook_restored
+}
+
+fn reconcile_raw_keyboard_after_resume() {
+    if let Err(error) = remove_raw_keyboard_device_event_registration() {
+        eprintln!("NumFlow: Raw Input reconciliation after resume failed: {error}");
+    }
+}
+
+fn resync_runtime_num_lock(hook_restored: bool) {
+    let num_lock_on = NUM_LOCK_ON.load(Ordering::Acquire);
+
+    // The first event is a transient fail-safe cleanup. Runtime handling of NumLock ON resets the
+    // normalizer, stops motion, and releases an active NumFlow mouse hold. The second event restores
+    // the authoritative pre-suspend Num Lock/NumFlow mode. No sleep or polling is involved.
+    let cleanup = KeyboardHookEvent::NumLockChanged {
+        num_lock_on: true,
+        sync_system: false,
+        play_feedback: false,
+    };
+    let restore = KeyboardHookEvent::NumLockChanged {
+        num_lock_on,
+        sync_system: false,
+        play_feedback: false,
+    };
+    let delivered = dispatch_lifecycle_events(&[cleanup, restore]);
+
+    if hook_restored && delivered {
+        INTERCEPTION_ENABLED.store(!num_lock_on, Ordering::Release);
+    } else {
+        INTERCEPTION_ENABLED.store(false, Ordering::Release);
+    }
+
+    if delivered {
+        eprintln!(
+            "NumFlow: NumLock resynced (num_lock_on={num_lock_on}, numflow_enabled={})",
+            !num_lock_on
+        );
+    } else {
+        eprintln!("NumFlow: NumLock resync event could not be delivered");
+    }
+}
+
+fn lifecycle_log(message: &str) {
+    eprintln!("NumFlow: {message}");
+}
+
+fn power_notification_message(event_type: u32) -> Option<u32> {
+    match event_type {
+        PBT_APMSUSPEND => Some(WM_NUMFLOW_SUSPEND),
+        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMECRITICAL => Some(WM_NUMFLOW_RESUME_AUTOMATIC),
+        PBT_APMRESUMESUSPEND => Some(WM_NUMFLOW_RESUME_USER),
+        _ => None,
+    }
+}
+
+unsafe extern "system" fn power_notification_callback(
+    _context: *const c_void,
+    event_type: u32,
+    _setting: *const c_void,
+) -> u32 {
+    let Some(message) = power_notification_message(event_type) else {
+        return 0;
+    };
+    let thread_id = HOOK_THREAD_ID.load(Ordering::Acquire);
+    if thread_id == 0 {
+        return 0;
+    }
+
+    let _ = unsafe { PostThreadMessageW(thread_id, message, WPARAM(0), LPARAM(0)) };
+    0
 }
 
 fn register_dispatcher(
@@ -400,6 +620,29 @@ fn dispatch_event(event: KeyboardHookEvent, priority: bool) -> bool {
         }
         Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
     }
+}
+
+fn dispatch_lifecycle_events(events: &[KeyboardHookEvent]) -> bool {
+    let Some(dispatcher) = EVENT_DISPATCHER.get() else {
+        return false;
+    };
+    let Ok(slot) = dispatcher.lock() else {
+        return false;
+    };
+    let Some(dispatcher) = slot.as_ref() else {
+        return false;
+    };
+
+    // Pre-suspend key-up messages are not trustworthy after resume. Drop all stale keyboard work,
+    // then enqueue the lifecycle sequence into a known-empty queue.
+    while dispatcher.overflow_reader.try_recv().is_ok() {}
+
+    for event in events {
+        if dispatcher.sender.try_send(*event).is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 fn num_lock_transition(
@@ -611,15 +854,31 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
 
 #[cfg(test)]
 mod tests {
-    use windows::Win32::UI::Input::{
-        KeyboardAndMouse::{INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK},
-        RIDEV_REMOVE,
+    use windows::{
+        Win32::{
+            Foundation::ERROR_INVALID_HOOK_HANDLE,
+            UI::{
+                Input::{
+                    KeyboardAndMouse::{
+                        INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VK_NUMLOCK,
+                    },
+                    RIDEV_REMOVE,
+                },
+                WindowsAndMessaging::{
+                    PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND,
+                    PBT_APMSUSPEND,
+                },
+            },
+        },
+        core::Error as WindowsError,
     };
 
     use super::{
         HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_PAGE_GENERIC, NUM_LOCK_SCAN_CODE,
-        NUMFLOW_NUM_LOCK_INJECTION_TAG, infer_num_lock_from_numpad, num_lock_replay_inputs,
-        num_lock_transition, raw_keyboard_removal_device,
+        NUMFLOW_NUM_LOCK_INJECTION_TAG, WM_NUMFLOW_RESUME_AUTOMATIC, WM_NUMFLOW_RESUME_USER,
+        WM_NUMFLOW_SUSPEND, hook_is_already_gone, infer_num_lock_from_numpad,
+        num_lock_replay_inputs, num_lock_transition, power_notification_message,
+        raw_keyboard_removal_device,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
@@ -630,6 +889,33 @@ mod tests {
         assert_eq!(device.usUsagePage, HID_USAGE_PAGE_GENERIC);
         assert_eq!(device.usUsage, HID_USAGE_GENERIC_KEYBOARD);
         assert_eq!(device.dwFlags, RIDEV_REMOVE);
+    }
+
+    #[test]
+    fn power_notifications_map_to_event_driven_hook_thread_messages() {
+        assert_eq!(
+            power_notification_message(PBT_APMSUSPEND),
+            Some(WM_NUMFLOW_SUSPEND)
+        );
+        assert_eq!(
+            power_notification_message(PBT_APMRESUMEAUTOMATIC),
+            Some(WM_NUMFLOW_RESUME_AUTOMATIC)
+        );
+        assert_eq!(
+            power_notification_message(PBT_APMRESUMECRITICAL),
+            Some(WM_NUMFLOW_RESUME_AUTOMATIC)
+        );
+        assert_eq!(
+            power_notification_message(PBT_APMRESUMESUSPEND),
+            Some(WM_NUMFLOW_RESUME_USER)
+        );
+        assert_eq!(power_notification_message(u32::MAX), None);
+    }
+
+    #[test]
+    fn invalid_hook_handle_is_treated_as_already_retired() {
+        let error: WindowsError = ERROR_INVALID_HOOK_HANDLE.into();
+        assert!(hook_is_already_gone(&error));
     }
 
     #[test]
