@@ -586,7 +586,6 @@ fn lifecycle_log(message: &str) {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 fn power_notification_message(event_type: u32) -> Option<u32> {
     match event_type {
         PBT_APMSUSPEND => Some(WM_NUMFLOW_SUSPEND),
