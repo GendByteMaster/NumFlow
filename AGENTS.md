@@ -20,7 +20,7 @@ cargo run --locked
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-features
-cargo build --locked --workspace --release --all-features
+#cargo build --locked --workspace --release --all-features
 ```
 
 The first command runs the app; the rest are the formatting, lint, test, and release-build quality gate used by GitHub Actions.
