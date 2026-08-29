@@ -125,8 +125,14 @@ fn input_resync_reasons_have_stable_diagnostic_labels() {
 }
 
 #[test]
-fn input_runtime_state_exposes_running_suspended_and_recovering_modes() {
+fn input_runtime_state_exposes_explicit_lifecycle_modes() {
+    assert_ne!(InputRuntimeState::Running, InputRuntimeState::Suspending);
     assert_ne!(InputRuntimeState::Running, InputRuntimeState::Suspended);
+    assert_ne!(InputRuntimeState::Suspended, InputRuntimeState::Resuming);
+    assert_ne!(
+        InputRuntimeState::Resuming,
+        InputRuntimeState::SessionLocked
+    );
     assert_ne!(InputRuntimeState::Suspended, InputRuntimeState::Recovering);
     assert_ne!(InputRuntimeState::Recovering, InputRuntimeState::Running);
 }

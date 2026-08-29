@@ -132,7 +132,13 @@ For every scaling level verify:
 - [ ] Start minimized.
 - [ ] Start with Windows registration uses `--background` and opens no settings window after sign-in.
 - [ ] Single-instance behaviour.
-- [ ] Sleep → resume with Num Lock state rechecked/synchronized.
+- [ ] Five consecutive Sleep → Wake → Unlock cycles restore NumPad immediately without toggling
+  Num Lock, opening the window, restarting NumFlow, or waiting several seconds.
+- [ ] Lock → Unlock, Task Manager → Sleep → Wake, and Ctrl+Alt+Del → Cancel preserve lifecycle
+  recovery and NumPad input.
+- [ ] Keyboard reconnect preserves `raw_input_state=keyboard-disabled-hook-owned` and
+  `keyboard_device_notifications=true` while restoring NumPad input.
+- [ ] Movement and NumFlow-owned mouse holds are released across Sleep/Lock.
 - [ ] Multi-monitor movement/use.
 - [ ] Repeated Num Lock On/Off cycles.
 - [ ] Clean application shutdown.

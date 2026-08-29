@@ -699,15 +699,14 @@ mod platform {
 
         *desktop_active = owns_input;
         if !owns_input {
-            quiesce_for_desktop_switch(
-                machine,
-                hook,
-                normalizer,
-                event_sink,
-                "input desktop changed; normal runtime quiesced",
-            );
             if !hook.suspend_for_desktop_switch() {
-                tracing::warn!("failed to queue inactive-desktop hook retirement");
+                fail_safe(
+                    machine,
+                    hook,
+                    normalizer,
+                    event_sink,
+                    "failed to queue inactive-desktop lifecycle event",
+                );
             }
             return;
         }
@@ -811,49 +810,39 @@ mod platform {
                 );
                 return true;
             }
+            KeyboardHookEvent::LifecycleRecovery {
+                generation,
+                num_lock_on,
+                sync_system,
+            } => {
+                handle_lifecycle_recovery(
+                    machine,
+                    hook,
+                    normalizer,
+                    event_sink,
+                    generation,
+                    num_lock_on,
+                    sync_system,
+                );
+                return true;
+            }
             KeyboardHookEvent::NumLockChanged {
                 num_lock_on,
                 sync_system,
                 play_feedback,
             } => {
-                normalizer.reset();
-                if play_feedback && let Some(audio_feedback) = audio_feedback {
-                    audio_feedback.play(if num_lock_on {
-                        AudioCue::NumFlowOff
-                    } else {
-                        AudioCue::NumFlowOn
-                    });
-                }
-
-                match apply_num_lock_mode(machine, num_lock_on) {
-                    Ok(effects) => {
-                        tracing::debug!(
-                            num_lock_on,
-                            numflow_enabled = !num_lock_on,
-                            "NumFlow NumLock state applied from input runtime"
-                        );
-                        if sync_system && !hook.sync_num_lock_to_windows() {
-                            fail_safe(
-                                machine,
-                                hook,
-                                normalizer,
-                                event_sink,
-                                &format!(
-                                    "failed to replay Num Lock state to Windows (num_lock_on={num_lock_on})"
-                                ),
-                            );
-                            return true;
-                        }
-                        hook.set_interception_enabled(machine.enabled());
-                        event_sink.send(RuntimeEvent::Effects {
-                            state: machine.snapshot(),
-                            effects,
-                        });
-                    }
-                    Err(error) => {
-                        fail_safe(machine, hook, normalizer, event_sink, &error.to_string());
-                    }
-                }
+                handle_num_lock_changed(
+                    machine,
+                    hook,
+                    normalizer,
+                    event_sink,
+                    audio_feedback,
+                    NumLockUpdate {
+                        num_lock_on,
+                        sync_system,
+                        play_feedback,
+                    },
+                );
                 return true;
             }
             KeyboardHookEvent::Key(event) => {
@@ -884,6 +873,111 @@ mod platform {
             }
         }
         true
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct NumLockUpdate {
+        num_lock_on: bool,
+        sync_system: bool,
+        play_feedback: bool,
+    }
+
+    fn handle_num_lock_changed(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+        audio_feedback: Option<&AudioFeedbackService>,
+        update: NumLockUpdate,
+    ) {
+        normalizer.reset();
+        if update.play_feedback
+            && let Some(audio_feedback) = audio_feedback
+        {
+            audio_feedback.play(if update.num_lock_on {
+                AudioCue::NumFlowOff
+            } else {
+                AudioCue::NumFlowOn
+            });
+        }
+
+        match apply_num_lock_mode(machine, update.num_lock_on) {
+            Ok(effects) => {
+                tracing::debug!(
+                    num_lock_on = update.num_lock_on,
+                    numflow_enabled = !update.num_lock_on,
+                    "NumFlow NumLock state applied from input runtime"
+                );
+                if update.sync_system && !hook.sync_num_lock_to_windows() {
+                    fail_safe(
+                        machine,
+                        hook,
+                        normalizer,
+                        event_sink,
+                        &format!(
+                            "failed to replay Num Lock state to Windows (num_lock_on={})",
+                            update.num_lock_on
+                        ),
+                    );
+                    return;
+                }
+                hook.set_interception_enabled(machine.enabled());
+                event_sink.send(RuntimeEvent::Effects {
+                    state: machine.snapshot(),
+                    effects,
+                });
+            }
+            Err(error) => {
+                fail_safe(machine, hook, normalizer, event_sink, &error.to_string());
+            }
+        }
+    }
+
+    fn handle_lifecycle_recovery(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+        generation: u32,
+        num_lock_on: bool,
+        sync_system: bool,
+    ) {
+        let recovery = apply_lifecycle_recovery(machine, normalizer, num_lock_on);
+        match recovery {
+            Ok(effects) => {
+                if sync_system && !hook.sync_num_lock_to_windows() {
+                    let _ = hook.complete_lifecycle_recovery(generation, false);
+                    fail_safe(
+                        machine,
+                        hook,
+                        normalizer,
+                        event_sink,
+                        &format!(
+                            "failed to replay Num Lock during lifecycle recovery (generation={generation}, num_lock_on={num_lock_on})"
+                        ),
+                    );
+                    return;
+                }
+                hook.set_interception_enabled(machine.enabled());
+                event_sink.send(RuntimeEvent::Effects {
+                    state: machine.snapshot(),
+                    effects,
+                });
+                if !hook.complete_lifecycle_recovery(generation, true) {
+                    fail_safe(
+                        machine,
+                        hook,
+                        normalizer,
+                        event_sink,
+                        &format!("failed to confirm lifecycle recovery generation {generation}"),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = hook.complete_lifecycle_recovery(generation, false);
+                fail_safe(machine, hook, normalizer, event_sink, &error.to_string());
+            }
+        }
     }
 
     fn apply_command(
@@ -982,6 +1076,17 @@ mod platform {
         machine.apply_action(InputAction::SetEnabled(!num_lock_on))
     }
 
+    fn apply_lifecycle_recovery<B: PointerBackend>(
+        machine: &mut RuntimeMachine<B>,
+        normalizer: &mut KeyboardEventNormalizer,
+        num_lock_on: bool,
+    ) -> Result<Vec<CoreEffect>, B::Error> {
+        normalizer.reset();
+        let mut effects = apply_num_lock_mode(machine, true)?;
+        effects.extend(apply_num_lock_mode(machine, num_lock_on)?);
+        Ok(effects)
+    }
+
     fn fail_safe(
         machine: &mut RuntimeMachine<WindowsPointer>,
         hook: &KeyboardHook,
@@ -998,24 +1103,6 @@ mod platform {
             state: machine.snapshot(),
             reason: message,
         });
-    }
-
-    fn quiesce_for_desktop_switch(
-        machine: &mut RuntimeMachine<WindowsPointer>,
-        hook: &KeyboardHook,
-        normalizer: &mut KeyboardEventNormalizer,
-        event_sink: &RuntimeEventSink,
-        reason: &str,
-    ) {
-        if let Some(error) = quiesce_runtime(machine, hook, normalizer, event_sink) {
-            // Losing the input desktop is expected during secure-desktop/session transitions. Only
-            // a failure to release injected pointer state is a fault that needs user-visible error
-            // handling here.
-            event_sink.send(RuntimeEvent::Fault {
-                state: machine.snapshot(),
-                reason: format!("{reason}; failed to release pointer state: {error}"),
-            });
-        }
     }
 
     fn quiesce_runtime(
@@ -1052,9 +1139,13 @@ mod platform {
             Bindings, CoreEffect, Direction, InputAction, MotionConfig, MouseButton, NumpadKey,
             PointerBackend, StateChange,
         };
-        use numflow_windows::{KeyState, NormalizedKeyEvent};
+        use numflow_windows::{
+            KeyState, KeyboardEventNormalizer, NormalizedKeyEvent, PhysicalKeyEvent,
+        };
 
-        use super::{RuntimeEventSink, RuntimeMachine, apply_num_lock_mode};
+        use super::{
+            RuntimeEventSink, RuntimeMachine, apply_lifecycle_recovery, apply_num_lock_mode,
+        };
         use crate::runtime::{RuntimeConfig, RuntimeEvent, RuntimeStateSnapshot};
 
         #[derive(Debug, Default)]
@@ -1192,21 +1283,31 @@ mod platform {
         }
 
         #[test]
-        fn num_lock_on_disables_runtime_and_releases_drag() {
+        fn lifecycle_cleanup_stops_movement_and_releases_drag() {
             let mut machine = runtime_machine();
+            let mut normalizer = KeyboardEventNormalizer::default();
             apply_num_lock_mode(&mut machine, false).expect("mock is infallible");
             machine
                 .apply_action(InputAction::Hold)
                 .expect("mock is infallible");
             machine.motion.press(Direction::Right);
+            let numpad_zero = PhysicalKeyEvent::new(0x2D, 0x52, false, KeyState::Pressed);
+            assert!(normalizer.process(numpad_zero, &machine.bindings).is_some());
+            assert!(normalizer.process(numpad_zero, &machine.bindings).is_none());
             assert!(machine.enabled());
             assert_eq!(machine.pointer.held, vec![MouseButton::Left]);
 
-            let effects = apply_num_lock_mode(&mut machine, true).expect("mock is infallible");
+            let effects = apply_lifecycle_recovery(&mut machine, &mut normalizer, false)
+                .expect("mock is infallible");
 
-            assert!(!machine.enabled());
+            assert!(machine.enabled());
             assert!(!machine.motion.is_moving());
             assert!(machine.pointer.held.is_empty());
+            assert_eq!(machine.pointer.releases, 1);
+            assert!(
+                normalizer.process(numpad_zero, &machine.bindings).is_some(),
+                "resume recovery must clear pressed/repeat NumPad state"
+            );
             assert!(
                 effects
                     .iter()

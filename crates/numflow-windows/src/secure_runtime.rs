@@ -122,6 +122,34 @@ fn handle_keyboard_event(
             hook.set_interception_enabled(machine.enabled());
             return Ok(());
         }
+        KeyboardHookEvent::LifecycleRecovery {
+            generation,
+            num_lock_on,
+            sync_system,
+        } => {
+            normalizer.reset();
+            let recovery = machine
+                .set_num_lock_mode(true)
+                .and_then(|()| machine.set_num_lock_mode(num_lock_on));
+            if let Err(error) = recovery {
+                let _ = hook.complete_lifecycle_recovery(generation, false);
+                machine.fail_safe();
+                hook.emergency_disable();
+                return Err(error.into());
+            }
+            if sync_system && !hook.sync_num_lock_to_windows() {
+                let _ = hook.complete_lifecycle_recovery(generation, false);
+                machine.fail_safe();
+                hook.emergency_disable();
+                return Ok(());
+            }
+            hook.set_interception_enabled(machine.enabled());
+            if !hook.complete_lifecycle_recovery(generation, true) {
+                machine.fail_safe();
+                hook.emergency_disable();
+            }
+            return Ok(());
+        }
         KeyboardHookEvent::Key(event) => {
             hook.record_runtime_numpad_event();
             event

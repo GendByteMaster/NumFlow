@@ -23,6 +23,8 @@ mod hud;
 #[cfg(windows)]
 mod instance;
 #[cfg(windows)]
+mod lifecycle;
+#[cfg(windows)]
 mod pointer;
 #[cfg(windows)]
 mod secure_runtime;
