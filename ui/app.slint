@@ -1,7 +1,7 @@
 import { Button, ComboBox } from "std-widgets.slint";
 import {
-    DisclosureRow, GlassSlider, GlassToggle, MappingRow, MenuAction, NumFlowTheme,
-    SegmentedControl, Separator, UtilityButton
+    DisclosureRow, MappingRow, MenuAction, NumFlowTheme, SegmentedControl, Separator,
+    SliderControl, Toggle, UtilityButton
 } from "design-system.slint";
 export * from "hud.slint";
 
@@ -14,12 +14,19 @@ export enum MouseButtonMode {
 export component AppWindow inherits Window {
     title: "NumFlow";
     icon: @image-url("../assets/numflow-icon.svg");
-    preferred-width: 600px;
-    preferred-height: 440px;
-    min-width: 540px;
-    min-height: 410px;
-    background: transparent;
-    default-font-family: "Segoe UI Variable";
+    preferred-width: 400px;
+    preferred-height: 354px;
+    min-width: 380px;
+    max-width: 420px;
+    height: root.advanced-open ? 470px : 354px;
+    background: root.platform-backdrop-available
+        ? NumFlowTheme.window-material
+        : NumFlowTheme.window-material-fallback;
+
+    animate height {
+        duration: root.reduced-motion ? 0ms : 160ms;
+        easing: ease-out;
+    }
 
     in-out property <bool> numflow-enabled: false;
     in-out property <float> pointer-speed: 180;
@@ -33,6 +40,7 @@ export component AppWindow inherits Window {
     in-out property <string> active-profile: "Normal";
     in-out property <int> binding-key-index: 0;
     in-out property <int> binding-action-index: 1;
+    in property <bool> platform-backdrop-available: false;
     in-out property <string> numpad-zero-label: "Hold / drag";
     in-out property <string> numpad-one-label: "Down-left";
     in-out property <string> numpad-two-label: "Down";
@@ -103,24 +111,27 @@ export component AppWindow inherits Window {
     }
 
     reset-dialog := PopupWindow {
-        width: 360px;
+        width: 340px;
         height: 170px;
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
         close-policy: close-on-click-outside;
 
         Rectangle {
-            background: NumFlowTheme.material;
+            background: NumFlowTheme.surface-glass-elevated;
             border-width: 1px;
-            border-color: NumFlowTheme.separator;
+            border-color: NumFlowTheme.border-subtle;
             border-radius: NumFlowTheme.radius-large;
+            drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+            drop-shadow-color: NumFlowTheme.shadow-elevated;
+            drop-shadow-offset-y: 2px;
 
             Rectangle {
                 x: 1px;
                 y: 1px;
                 width: parent.width - 2px;
                 height: 1px;
-                background: #ffffff2a;
+                background: NumFlowTheme.glass-highlight;
             }
 
             VerticalLayout {
@@ -129,14 +140,14 @@ export component AppWindow inherits Window {
 
                 Text {
                     text: "Reset all NumFlow settings?";
-                    color: NumFlowTheme.label;
+                    color: NumFlowTheme.text-primary;
                     font-size: 15px;
                     font-weight: 600;
                 }
 
                 Text {
                     text: "Pointer settings, profiles, bindings and preferences will return to their defaults.";
-                    color: NumFlowTheme.secondary-label;
+                    color: NumFlowTheme.text-secondary;
                     font-size: 11px;
                     wrap: word-wrap;
                 }
@@ -172,10 +183,13 @@ export component AppWindow inherits Window {
         close-policy: close-on-click-outside;
 
         Rectangle {
-            background: NumFlowTheme.material;
+            background: NumFlowTheme.surface-glass-elevated;
             border-width: 1px;
-            border-color: NumFlowTheme.separator;
+            border-color: NumFlowTheme.border-subtle;
             border-radius: NumFlowTheme.radius-medium;
+            drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+            drop-shadow-color: NumFlowTheme.shadow-elevated;
+            drop-shadow-offset-y: 2px;
 
             VerticalLayout {
                 padding: 8px;
@@ -219,24 +233,27 @@ export component AppWindow inherits Window {
     }
 
     bindings-panel := PopupWindow {
-        width: 510px;
+        width: 460px;
         height: 392px;
         x: (root.width - self.width) / 2;
         y: 10px;
         close-policy: close-on-click-outside;
 
         Rectangle {
-            background: NumFlowTheme.material;
+            background: NumFlowTheme.surface-glass-elevated;
             border-width: 1px;
-            border-color: NumFlowTheme.separator;
+            border-color: NumFlowTheme.border-subtle;
             border-radius: NumFlowTheme.radius-large;
+            drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+            drop-shadow-color: NumFlowTheme.shadow-elevated;
+            drop-shadow-offset-y: 2px;
 
             Rectangle {
                 x: 1px;
                 y: 1px;
                 width: parent.width - 2px;
                 height: 1px;
-                background: #ffffff2a;
+                background: NumFlowTheme.glass-highlight;
             }
 
             VerticalLayout {
@@ -248,8 +265,8 @@ export component AppWindow inherits Window {
 
                     VerticalLayout {
                         spacing: 1px;
-                        Text { text: "Bindings"; color: NumFlowTheme.label; font-size: 16px; font-weight: 600; }
-                        Text { text: "Profile · " + root.active-profile; color: NumFlowTheme.secondary-label; font-size: 11px; }
+                        Text { text: "Bindings"; color: NumFlowTheme.text-primary; font-size: 16px; font-weight: 600; }
+                        Text { text: "Profile · " + root.active-profile; color: NumFlowTheme.text-secondary; font-size: 11px; }
                     }
 
                     Rectangle { horizontal-stretch: 1; background: transparent; }
@@ -265,7 +282,7 @@ export component AppWindow inherits Window {
 
                 Separator { }
 
-                Text { text: "Pointer movement"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+                Text { text: "Pointer movement"; color: NumFlowTheme.text-primary; font-size: 11px; font-weight: 600; }
 
                 HorizontalLayout {
                     spacing: 24px;
@@ -289,7 +306,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Text { text: "Mouse"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+                Text { text: "Mouse"; color: NumFlowTheme.text-primary; font-size: 11px; font-weight: 600; }
 
                 HorizontalLayout {
                     spacing: 24px;
@@ -311,7 +328,7 @@ export component AppWindow inherits Window {
 
                 Separator { }
 
-                Text { text: "Edit binding"; color: NumFlowTheme.label; font-size: 11px; font-weight: 600; }
+                Text { text: "Edit binding"; color: NumFlowTheme.text-primary; font-size: 11px; font-weight: 600; }
 
                 HorizontalLayout {
                     spacing: 8px;
@@ -351,103 +368,85 @@ export component AppWindow inherits Window {
     }
 
     Rectangle {
-        background: NumFlowTheme.material;
+        background: root.platform-backdrop-available
+            ? NumFlowTheme.window-material
+            : NumFlowTheme.window-material-fallback;
+        border-radius: NumFlowTheme.radius-large;
+        clip: true;
+        border-width: 1px;
+        border-color: NumFlowTheme.border-subtle;
+        drop-shadow-blur: NumFlowTheme.shadow-window-blur;
+        drop-shadow-color: NumFlowTheme.shadow-window;
+        drop-shadow-offset-y: 3px;
 
         Rectangle {
-            x: 0px;
-            y: 0px;
             width: parent.width;
-            height: 1px;
-            background: @linear-gradient(90deg, #0a84ff00 0%, #64d2ff24 24%, #ffffff2c 50%, #0a84ff18 76%, #0a84ff00 100%);
-        }
-
-        ambient-top := Rectangle {
-            x: -88px;
-            y: -148px;
-            width: 430px;
-            height: 300px;
-            background: @radial-gradient(circle, #64d2ff14 0%, #0a84ff09 38%, #0a84ff00 72%);
-            opacity: root.numflow-enabled ? 1 : 0.46;
-            animate opacity {
-                duration: root.reduced-motion ? 0ms : 220ms;
-                easing: ease-out;
-            }
+            height: parent.height;
+            background: NumFlowTheme.background-glaze;
+            opacity: root.platform-backdrop-available ? 1 : 0.82;
         }
 
         Rectangle {
-            x: parent.width - 250px;
-            y: parent.height - 210px;
-            width: 320px;
-            height: 250px;
-            background: @radial-gradient(circle, #0a84ff0c 0%, #0a84ff00 70%);
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: 1px;
+            background: NumFlowTheme.glass-highlight;
         }
 
         VerticalLayout {
-            padding-left: 22px;
-            padding-right: 22px;
-            padding-top: 18px;
-            padding-bottom: 18px;
+            padding-left: NumFlowTheme.spacing-lg;
+            padding-right: NumFlowTheme.spacing-lg;
+            padding-top: NumFlowTheme.spacing-lg;
+            padding-bottom: 14px;
             spacing: 0px;
 
             Rectangle {
-                min-height: 38px;
-                max-height: 38px;
-                background: transparent;
+                min-height: 48px;
+                max-height: 48px;
+                border-radius: NumFlowTheme.radius-medium;
+                background: root.numflow-enabled
+                    ? NumFlowTheme.accent-muted
+                    : NumFlowTheme.surface-glass-elevated;
+                border-width: 1px;
+                border-color: NumFlowTheme.border-subtle;
 
                 HorizontalLayout {
-                    spacing: 8px;
+                    padding-left: NumFlowTheme.spacing-md;
+                    padding-right: NumFlowTheme.spacing-md;
+                    spacing: NumFlowTheme.spacing-sm;
                     cross-axis-alignment: center;
 
                     Rectangle {
-                        min-width: 14px;
-                        max-width: 14px;
-                        min-height: 14px;
-                        max-height: 14px;
-                        background: transparent;
-
-                        Rectangle {
-                            x: 0px;
-                            y: 0px;
-                            width: 14px;
-                            height: 14px;
-                            border-radius: 7px;
-                            background: #30d15820;
-                            opacity: root.numflow-enabled ? 1 : 0;
-                            animate opacity {
-                                duration: root.reduced-motion ? 0ms : 180ms;
-                                easing: ease-out;
-                            }
-                        }
-
-                        Rectangle {
-                            x: 4px;
-                            y: 4px;
-                            width: 6px;
-                            height: 6px;
-                            border-radius: 3px;
-                            background: root.numflow-enabled ? NumFlowTheme.status-active : transparent;
-                            border-width: root.numflow-enabled ? 0px : 1px;
-                            border-color: NumFlowTheme.secondary-label;
-                            drop-shadow-blur: root.numflow-enabled ? 6px : 0px;
-                            drop-shadow-color: #30d15872;
-                            animate background {
-                                duration: root.reduced-motion ? 0ms : 180ms;
-                                easing: ease-out;
-                            }
-                        }
+                        min-width: 12px;
+                        max-width: 12px;
+                        min-height: 12px;
+                        max-height: 12px;
+                        border-radius: 6px;
+                        background: root.numflow-enabled ? NumFlowTheme.status-active : transparent;
+                        border-width: root.numflow-enabled ? 0px : 1px;
+                        border-color: NumFlowTheme.text-secondary;
                     }
 
-                    Text {
-                        text: root.numflow-enabled ? "Active" : "Disabled";
-                        color: NumFlowTheme.label;
-                        font-size: 13px;
-                        font-weight: 550;
+                    VerticalLayout {
+                        spacing: 0px;
+                        Text {
+                            text: root.numflow-enabled ? "Active" : "Inactive";
+                            color: NumFlowTheme.text-primary;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: root.numflow-enabled ? "NumPad control is ready" : "NumPad control is paused";
+                            color: NumFlowTheme.text-secondary;
+                            font-size: 11px;
+                        }
                     }
 
                     Rectangle { horizontal-stretch: 1; background: transparent; }
 
-                    GlassToggle {
-                        a11y-label: "NumFlow";
+                    Toggle {
+                        a11y-label: "NumFlow activation";
                         checked <=> root.numflow-enabled;
                         reduced-motion: root.reduced-motion;
                         toggled(checked) => { root.enabled-toggled(checked); }
@@ -455,7 +454,7 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: root.numflow-enabled ? "On" : "Off";
-                        color: NumFlowTheme.secondary-label;
+                        color: NumFlowTheme.text-secondary;
                         font-size: 11px;
                         min-width: 22px;
                         max-width: 22px;
@@ -463,7 +462,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle { min-height: 16px; max-height: 16px; background: transparent; }
+            Rectangle { min-height: NumFlowTheme.spacing-lg; max-height: NumFlowTheme.spacing-lg; background: transparent; }
 
             Rectangle {
                 min-height: 36px;
@@ -471,16 +470,16 @@ export component AppWindow inherits Window {
                 background: transparent;
 
                 HorizontalLayout {
-                    spacing: 14px;
+                    spacing: NumFlowTheme.spacing-md;
                     cross-axis-alignment: center;
 
                     Text {
                         text: "Mouse";
-                        color: NumFlowTheme.label;
+                        color: NumFlowTheme.text-primary;
                         font-size: 12px;
                         font-weight: 500;
-                        min-width: 86px;
-                        max-width: 86px;
+                        min-width: NumFlowTheme.label-column-width;
+                        max-width: NumFlowTheme.label-column-width;
                     }
 
                     SegmentedControl {
@@ -499,7 +498,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle { min-height: 12px; max-height: 12px; background: transparent; }
+            Rectangle { min-height: NumFlowTheme.spacing-md; max-height: NumFlowTheme.spacing-md; background: transparent; }
 
             Rectangle {
                 min-height: 36px;
@@ -507,16 +506,16 @@ export component AppWindow inherits Window {
                 background: transparent;
 
                 HorizontalLayout {
-                    spacing: 14px;
+                    spacing: NumFlowTheme.spacing-md;
                     cross-axis-alignment: center;
 
                     Text {
-                        text: "Pointer";
-                        color: NumFlowTheme.label;
+                        text: "Profile";
+                        color: NumFlowTheme.text-primary;
                         font-size: 12px;
                         font-weight: 500;
-                        min-width: 86px;
-                        max-width: 86px;
+                        min-width: NumFlowTheme.label-column-width;
+                        max-width: NumFlowTheme.label-column-width;
                     }
 
                     SegmentedControl {
@@ -536,7 +535,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            Rectangle { min-height: 20px; max-height: 20px; background: transparent; }
+            Rectangle { min-height: 16px; max-height: 16px; background: transparent; }
 
             Rectangle {
                 min-height: 32px;
@@ -544,19 +543,19 @@ export component AppWindow inherits Window {
                 background: transparent;
 
                 HorizontalLayout {
-                    spacing: 12px;
+                        spacing: NumFlowTheme.spacing-md;
                     cross-axis-alignment: center;
 
                     Text {
                         text: "Speed";
-                        color: NumFlowTheme.label;
+                        color: NumFlowTheme.text-primary;
                         font-size: 12px;
                         font-weight: 500;
-                        min-width: 86px;
-                        max-width: 86px;
+                        min-width: NumFlowTheme.label-column-width;
+                        max-width: NumFlowTheme.label-column-width;
                     }
 
-                    GlassSlider {
+                    SliderControl {
                         horizontal-stretch: 1;
                         a11y-label: "Pointer speed";
                         minimum: 40;
@@ -571,17 +570,17 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: "\{Math.round(root.pointer-speed)} px/s";
-                        color: NumFlowTheme.secondary-label;
+                        color: NumFlowTheme.text-secondary;
                         font-size: 11px;
                         font-weight: 500;
                         horizontal-alignment: right;
-                        min-width: 74px;
-                        max-width: 74px;
+                        min-width: NumFlowTheme.value-column-width;
+                        max-width: NumFlowTheme.value-column-width;
                     }
                 }
             }
 
-            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
+            Rectangle { min-height: NumFlowTheme.spacing-sm; max-height: NumFlowTheme.spacing-sm; background: transparent; }
 
             Rectangle {
                 min-height: 32px;
@@ -589,19 +588,19 @@ export component AppWindow inherits Window {
                 background: transparent;
 
                 HorizontalLayout {
-                    spacing: 12px;
+                        spacing: NumFlowTheme.spacing-md;
                     cross-axis-alignment: center;
 
                     Text {
                         text: "Acceleration";
-                        color: NumFlowTheme.label;
+                        color: NumFlowTheme.text-primary;
                         font-size: 12px;
                         font-weight: 500;
-                        min-width: 86px;
-                        max-width: 86px;
+                        min-width: NumFlowTheme.label-column-width;
+                        max-width: NumFlowTheme.label-column-width;
                     }
 
-                    GlassSlider {
+                    SliderControl {
                         horizontal-stretch: 1;
                         a11y-label: "Pointer acceleration";
                         minimum: 0;
@@ -616,17 +615,17 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: "\{Math.round(root.pointer-acceleration)} px/s²";
-                        color: NumFlowTheme.secondary-label;
+                        color: NumFlowTheme.text-secondary;
                         font-size: 11px;
                         font-weight: 500;
                         horizontal-alignment: right;
-                        min-width: 74px;
-                        max-width: 74px;
+                        min-width: NumFlowTheme.value-column-width;
+                        max-width: NumFlowTheme.value-column-width;
                     }
                 }
             }
 
-            Rectangle { min-height: 10px; max-height: 10px; background: transparent; }
+            Rectangle { min-height: NumFlowTheme.spacing-sm; max-height: NumFlowTheme.spacing-sm; background: transparent; }
 
             DisclosureRow {
                 label: "Advanced";
@@ -639,36 +638,38 @@ export component AppWindow inherits Window {
             }
 
             advanced-content := Rectangle {
-                min-height: root.advanced-open ? 82px : 0px;
-                max-height: root.advanced-open ? 82px : 0px;
+                min-height: root.advanced-open ? 116px : 0px;
+                max-height: root.advanced-open ? 116px : 0px;
                 opacity: root.advanced-open ? 1 : 0;
                 clip: true;
-                background: transparent;
+                background: root.advanced-open ? NumFlowTheme.surface-glass : transparent;
+                border-width: root.advanced-open ? 1px : 0px;
+                border-color: NumFlowTheme.border-subtle;
+                border-radius: NumFlowTheme.radius-medium;
 
                 animate min-height, max-height, opacity {
-                    duration: root.reduced-motion ? 0ms : 210ms;
+                    duration: root.reduced-motion ? 0ms : 160ms;
                     easing: ease-out;
                 }
 
                 VerticalLayout {
-                    padding-left: 12px;
-                    padding-right: 2px;
-                    spacing: 2px;
+                    padding: NumFlowTheme.spacing-sm;
+                    spacing: 6px;
 
                     Rectangle {
-                        min-height: 40px;
-                        max-height: 40px;
+                        min-height: 32px;
+                        max-height: 32px;
                         background: transparent;
                         HorizontalLayout {
-                            spacing: 12px;
+                            spacing: NumFlowTheme.spacing-sm;
                             cross-axis-alignment: center;
                             VerticalLayout {
                                 spacing: 1px;
-                                Text { text: "Precision mode"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                                Text { text: "Reduce pointer speed for fine movement"; color: NumFlowTheme.secondary-label; font-size: 11px; }
+                                Text { text: "Precision mode"; color: NumFlowTheme.text-primary; font-size: 12px; font-weight: 500; }
+                                Text { text: "Reduce pointer speed for fine movement"; color: NumFlowTheme.text-secondary; font-size: 11px; }
                             }
                             Rectangle { horizontal-stretch: 1; background: transparent; }
-                            GlassToggle {
+                            Toggle {
                                 enabled: root.advanced-open;
                                 a11y-label: "Precision mode";
                                 checked <=> root.precision-enabled;
@@ -682,58 +683,84 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
-                        min-height: 40px;
-                        max-height: 40px;
+                        min-height: 60px;
+                        max-height: 60px;
                         background: transparent;
-                        HorizontalLayout {
-                            spacing: 10px;
-                            cross-axis-alignment: center;
-                            VerticalLayout {
-                                spacing: 1px;
-                                Text { text: "Interface sounds"; color: NumFlowTheme.label; font-size: 12px; font-weight: 500; }
-                                Text { text: "Semantic feedback volume"; color: NumFlowTheme.secondary-label; font-size: 11px; }
-                            }
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            GlassSlider {
-                                enabled: root.advanced-open && root.sounds-enabled;
-                                a11y-label: "Sound volume";
-                                min-width: 112px;
-                                max-width: 112px;
-                                minimum: 0;
-                                maximum: 100;
-                                step: 5;
-                                value <=> root.sound-volume;
-                                changed(value) => {
-                                    root.sound-volume-changed(value);
-                                    root.mark-saved();
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Rectangle {
+                                min-height: 28px;
+                                max-height: 28px;
+                                background: transparent;
+                                HorizontalLayout {
+                                    spacing: NumFlowTheme.spacing-sm;
+                                    cross-axis-alignment: center;
+                                    VerticalLayout {
+                                        spacing: 1px;
+                                        Text { text: "Interface sounds"; color: NumFlowTheme.text-primary; font-size: 12px; font-weight: 500; }
+                                        Text { text: "Play feedback sounds"; color: NumFlowTheme.text-secondary; font-size: 11px; }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    Toggle {
+                                        enabled: root.advanced-open;
+                                        a11y-label: "Interface sounds";
+                                        checked <=> root.sounds-enabled;
+                                        reduced-motion: root.reduced-motion;
+                                        toggled(checked) => {
+                                            root.sounds-toggled(checked);
+                                            root.mark-saved();
+                                        }
+                                    }
                                 }
                             }
-                            Text {
-                                text: "\{Math.round(root.sound-volume)}%";
-                                color: NumFlowTheme.secondary-label;
-                                opacity: root.sounds-enabled ? 1 : 0.45;
-                                font-size: 11px;
-                                font-weight: 500;
-                                horizontal-alignment: right;
-                                min-width: 30px;
-                                max-width: 30px;
-                            }
-                            GlassToggle {
-                                enabled: root.advanced-open;
-                                a11y-label: "Interface sounds";
-                                checked <=> root.sounds-enabled;
-                                reduced-motion: root.reduced-motion;
-                                toggled(checked) => {
-                                    root.sounds-toggled(checked);
-                                    root.mark-saved();
+
+                            Rectangle {
+                                min-height: 28px;
+                                max-height: 28px;
+                                background: transparent;
+                                HorizontalLayout {
+                                    spacing: NumFlowTheme.spacing-sm;
+                                    cross-axis-alignment: center;
+
+                                    Text {
+                                        text: "Volume";
+                                        color: NumFlowTheme.text-secondary;
+                                        font-size: 11px;
+                                        min-width: 48px;
+                                        max-width: 48px;
+                                    }
+
+                                    SliderControl {
+                                        horizontal-stretch: 1;
+                                        enabled: root.advanced-open && root.sounds-enabled;
+                                        a11y-label: "Sound volume";
+                                        minimum: 0;
+                                        maximum: 100;
+                                        step: 5;
+                                        value <=> root.sound-volume;
+                                        changed(value) => {
+                                            root.sound-volume-changed(value);
+                                            root.mark-saved();
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "\{Math.round(root.sound-volume)}%";
+                                        color: NumFlowTheme.text-secondary;
+                                        opacity: root.sounds-enabled ? 1 : 0.45;
+                                        font-size: 11px;
+                                        font-weight: 500;
+                                        horizontal-alignment: right;
+                                        min-width: 36px;
+                                        max-width: 36px;
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-
-            Rectangle { vertical-stretch: 1; background: transparent; }
 
             Separator { }
 
@@ -750,12 +777,12 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: "HUD";
-                        color: NumFlowTheme.label;
+                        color: NumFlowTheme.text-secondary;
                         font-size: 12px;
                         font-weight: 500;
                     }
 
-                    GlassToggle {
+                    Toggle {
                         a11y-label: "HUD";
                         checked <=> root.hud-enabled;
                         reduced-motion: root.reduced-motion;
@@ -768,7 +795,7 @@ export component AppWindow inherits Window {
 
                     Text {
                         text: "✓ Saved";
-                        color: NumFlowTheme.secondary-label;
+                        color: NumFlowTheme.text-secondary;
                         font-size: 11px;
                         opacity: root.saved-visible ? 1 : 0;
                         animate opacity { duration: root.reduced-motion ? 0ms : 140ms; }

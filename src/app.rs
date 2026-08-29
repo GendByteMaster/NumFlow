@@ -493,15 +493,16 @@ fn configure_main_window_material(window: &AppWindow) {
             return;
         };
 
+        // Windows 11 Mica supplies the backdrop blur/material layer. The Slint surface has a
+        // deliberately high-opacity fallback, so unsupported composition never exposes the
+        // application behind the settings window as readable content.
         let configured = window.window().with_winit_window(|winit_window| {
-            // Mica is a native Windows 11 system backdrop. Unsupported systems simply keep the
-            // translucent Slint material fallback drawn by the UI.
             winit_window.set_system_backdrop(BackdropType::MainWindow);
         });
-
+        window.set_platform_backdrop_available(configured.is_some());
         if configured.is_none() {
-            tracing::warn!(
-                "NumFlow glass material requires the Slint winit backend; using translucent fallback"
+            tracing::debug!(
+                "NumFlow native backdrop unavailable; using the high-opacity glass fallback"
             );
         }
     });
@@ -1102,7 +1103,6 @@ pub fn run(background: bool) -> Result<(), AppError> {
     tracing::info!("NumFlow system tray ready; keyboard runtime is already active");
     let window = AppWindow::new().map_err(|error| AppError::Ui(error.to_string()))?;
     configure_main_window_material(&window);
-
     crate::platform_input::prepare_after_ui().map_err(AppError::Runtime)?;
 
     #[cfg(windows)]

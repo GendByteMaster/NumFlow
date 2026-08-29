@@ -18,7 +18,6 @@ export component HudWindow inherits Window {
     background: transparent;
     no-frame: true;
     always-on-top: true;
-    default-font-family: "Segoe UI Variable";
 
     in-out property <HudIconKind> icon-kind: HudIconKind.info;
     in-out property <string> headline: "NumFlow";
@@ -53,12 +52,12 @@ export component HudWindow inherits Window {
         // HUD translucency is clipped to the rounded card instead of the full native window.
         background: NumFlowTheme.hud-material;
         border-width: root.persistent ? 1px : 1px;
-        border-color: root.persistent ? #64d2ff82 : NumFlowTheme.glass-border;
+        border-color: root.persistent ? NumFlowTheme.accent : NumFlowTheme.separator;
         border-radius: 17px;
         // Keep the shadow within the 288x84 transparent HWND. A large blur is clipped by
         // the native window bounds and produces uneven dark edges at fractional DPI scales.
-        drop-shadow-blur: 5px;
-        drop-shadow-color: NumFlowTheme.shadow-color;
+        drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+        drop-shadow-color: NumFlowTheme.shadow-elevated;
         drop-shadow-offset-y: 1px;
 
         animate y, opacity {
@@ -70,7 +69,8 @@ export component HudWindow inherits Window {
             width: parent.width;
             height: parent.height;
             border-radius: parent.border-radius;
-            background: @linear-gradient(135deg, #ffffff14 0%, #ffffff05 44%, #0a84ff12 100%);
+            background: NumFlowTheme.glass-highlight;
+            opacity: 0.45;
         }
 
         // Keep the specular highlight away from the rounded corners. A full-width 1px
@@ -80,7 +80,7 @@ export component HudWindow inherits Window {
             y: 1px;
             width: parent.width - 36px;
             height: 1px;
-            background: @linear-gradient(90deg, #ffffff08 0%, #ffffff42 48%, #64d2ff20 75%, #ffffff00 100%);
+            background: NumFlowTheme.glass-highlight;
         }
 
         Rectangle {
@@ -89,7 +89,7 @@ export component HudWindow inherits Window {
             width: 2px;
             height: parent.height - 38px;
             border-radius: 1px;
-            background: NumFlowTheme.accent-secondary;
+            background: NumFlowTheme.accent;
             opacity: root.persistent ? 0.95 : 0;
             animate opacity {
                 duration: root.reduced-motion ? 0ms : 150ms;
@@ -112,14 +112,14 @@ export component HudWindow inherits Window {
                 border-radius: 12px;
                 transform-scale: root.revealed ? 1 : 0.88;
                 transform-rotation: root.revealed ? 0deg : -5deg;
-                background: @linear-gradient(145deg, #0a84ff30 0%, #64d2ff12 100%);
+                background: NumFlowTheme.accent-muted;
                 border-width: 1px;
-                border-color: #64d2ff42;
-                drop-shadow-blur: 8px;
-                drop-shadow-color: #0a84ff20;
+                border-color: NumFlowTheme.border-subtle;
+                drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+                drop-shadow-color: NumFlowTheme.shadow-elevated;
 
                 animate transform-scale, transform-rotation {
-                    duration: root.reduced-motion ? 0ms : 210ms;
+                    duration: root.reduced-motion ? 0ms : 160ms;
                     easing: ease-out-back;
                 }
 
@@ -140,7 +140,7 @@ export component HudWindow inherits Window {
 
                 Text {
                     text: root.headline;
-                    color: NumFlowTheme.label;
+                    color: NumFlowTheme.text-primary;
                     font-size: 13px;
                     font-weight: 600;
                     overflow: elide;
@@ -148,7 +148,7 @@ export component HudWindow inherits Window {
 
                 Text {
                     text: root.detail;
-                    color: NumFlowTheme.secondary-label;
+                    color: NumFlowTheme.text-secondary;
                     font-size: 11px;
                     overflow: elide;
                 }
@@ -160,10 +160,10 @@ export component HudWindow inherits Window {
                 min-height: 8px;
                 max-height: 8px;
                 border-radius: 4px;
-                background: NumFlowTheme.accent-secondary;
+                background: NumFlowTheme.accent;
                 opacity: root.persistent ? 1 : 0;
-                drop-shadow-blur: 6px;
-                drop-shadow-color: #64d2ff70;
+                drop-shadow-blur: NumFlowTheme.shadow-elevated-blur;
+                drop-shadow-color: NumFlowTheme.shadow-elevated;
                 animate opacity {
                     duration: root.reduced-motion ? 0ms : 150ms;
                 }

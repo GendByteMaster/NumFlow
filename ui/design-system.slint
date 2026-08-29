@@ -1,44 +1,58 @@
 import { Palette, Slider } from "std-widgets.slint";
 
+// Semantic tokens keep the shared UI calm and platform-adaptive. The system palette supplies
+// light/dark appearance and native contrast choices; components should not need raw colors.
 export global NumFlowTheme {
     in property <brush> background: Palette.background;
-    in property <brush> surface: Palette.alternate-background;
-    // Keep the native Mica influence subtle: desktop content must never remain readable
-    // through the utility surface. Raised controls retain a little more translucency.
-    in property <brush> material: Palette.background.with-alpha(0.97);
-    in property <brush> material-raised: Palette.alternate-background.with-alpha(0.90);
-    in property <brush> hud-material: Palette.background.with-alpha(0.94);
-    in property <brush> control: Palette.control-background.with-alpha(0.88);
-    in property <brush> label: Palette.foreground;
-    in property <brush> secondary-label: Palette.alternate-foreground;
-    in property <brush> tertiary-label: Palette.alternate-foreground.with-alpha(0.70);
-    in property <brush> separator: Palette.border.with-alpha(0.32);
-    in property <color> accent: #0a84ff;
-    in property <color> accent-secondary: #64d2ff;
+    in property <brush> surface: Palette.background;
+    in property <brush> window-material: Palette.background.with-alpha(0.88);
+    in property <brush> window-material-fallback: Palette.background.with-alpha(0.93);
+    in property <brush> background-glaze: @linear-gradient(135deg, #2563eb12 0%, #2563eb04 48%, #ffffff09 100%);
+    in property <brush> surface-glass: Palette.foreground.with-alpha(0.07);
+    in property <brush> surface-glass-elevated: Palette.foreground.with-alpha(0.12);
+    in property <brush> surface-glass-hover: Palette.foreground.with-alpha(0.08);
+    in property <brush> surface-glass-pressed: Palette.foreground.with-alpha(0.13);
+    in property <brush> control-surface: Palette.foreground.with-alpha(0.10);
+    in property <brush> control-hover: Palette.foreground.with-alpha(0.16);
+    in property <brush> control-selected: #2563eb26;
+    in property <brush> text-primary: Palette.foreground;
+    in property <brush> text-secondary: Palette.alternate-foreground;
+    in property <brush> text-tertiary: Palette.alternate-foreground.with-alpha(0.72);
+    in property <brush> border-subtle: Palette.foreground.with-alpha(0.28);
+    in property <brush> separator: Palette.foreground.with-alpha(0.22);
+    in property <color> accent: #2563eb;
+    in property <brush> accent-muted: #2563eb18;
     in property <color> accent-foreground: #ffffff;
-    in property <brush> accent-soft: #0a84ff20;
-    in property <brush> accent-strong: #0a84ff38;
-    in property <brush> hover: Palette.foreground.with-alpha(0.055);
-    in property <brush> pressed: Palette.foreground.with-alpha(0.10);
-    in property <color> focus-ring: #64d2ff;
-    in property <color> status-active: #30d158;
-    in property <color> destructive: #ff453a;
-    in property <brush> destructive-soft: #ff453a1c;
-    in property <color> glass-border: #ffffff2a;
-    in property <color> glass-highlight: #ffffff32;
-    in property <color> shadow-color: #00000058;
+    in property <color> focus-ring: #2563eb;
+    in property <color> status-active: #16803c;
+    in property <color> destructive: #c62828;
+    in property <brush> destructive-soft: #c6282818;
+    in property <color> shadow-window: #00000038;
+    in property <color> shadow-elevated: #00000024;
+    in property <color> glass-highlight: #ffffff16;
+    in property <length> shadow-window-blur: 18px;
+    in property <length> shadow-elevated-blur: 12px;
 
+    in property <length> spacing-xs: 4px;
+    in property <length> spacing-sm: 8px;
+    in property <length> spacing-md: 12px;
+    in property <length> spacing-lg: 16px;
     in property <length> radius-small: 7px;
-    in property <length> radius-medium: 10px;
-    in property <length> radius-large: 13px;
-    in property <length> control-height: 36px;
-    in property <length> key-height: 48px;
+    in property <length> radius-medium: 9px;
+    in property <length> radius-large: 12px;
+    in property <length> control-height: 32px;
+    in property <length> row-height: 36px;
+    in property <length> label-column-width: 92px;
+    in property <length> value-column-width: 82px;
+
+    // Transient HUD material is separate from the main window material.
+    in property <brush> hud-material: surface-glass-elevated;
 }
 
 export component Separator inherits Rectangle {
     min-height: 1px;
     max-height: 1px;
-    background: @linear-gradient(90deg, #ffffff00 0%, NumFlowTheme.separator 12%, NumFlowTheme.separator 88%, #ffffff00 100%);
+    background: NumFlowTheme.separator;
 }
 
 component SegmentedCell inherits Rectangle {
@@ -58,23 +72,23 @@ component SegmentedCell inherits Rectangle {
         width: parent.width;
         height: parent.height;
         border-radius: NumFlowTheme.radius-small;
-        background: interaction.pressed ? NumFlowTheme.pressed : NumFlowTheme.hover;
+        background: interaction.pressed ? NumFlowTheme.surface-glass-pressed : NumFlowTheme.control-hover;
         opacity: interaction.pressed ? 1 : interaction.has-hover && root.enabled ? 1 : 0;
         animate opacity {
-            duration: root.reduced-motion ? 0ms : 120ms;
+            duration: root.reduced-motion ? 0ms : 140ms;
             easing: ease-out;
         }
     }
 
     HorizontalLayout {
-        padding-left: 7px;
-        padding-right: 7px;
+        padding-left: NumFlowTheme.spacing-sm;
+        padding-right: NumFlowTheme.spacing-sm;
         spacing: 5px;
         alignment: center;
 
         Text {
             text: root.selected ? "✓" : "";
-            color: NumFlowTheme.accent-secondary;
+            color: NumFlowTheme.accent;
             font-size: 10px;
             font-weight: 700;
             vertical-alignment: center;
@@ -82,7 +96,7 @@ component SegmentedCell inherits Rectangle {
 
         Text {
             text: root.label;
-            color: NumFlowTheme.label;
+            color: NumFlowTheme.text-primary;
             font-size: 12px;
             font-weight: root.selected ? 600 : 450;
             vertical-alignment: center;
@@ -127,22 +141,11 @@ export component SegmentedControl inherits Rectangle {
 
     min-height: NumFlowTheme.control-height;
     max-height: NumFlowTheme.control-height;
-    background: NumFlowTheme.material-raised;
+    background: NumFlowTheme.control-surface;
     border-width: 1px;
-    border-color: NumFlowTheme.glass-border;
+    border-color: NumFlowTheme.separator;
     border-radius: NumFlowTheme.radius-medium;
     opacity: root.enabled ? 1 : 0.58;
-    drop-shadow-blur: 7px;
-    drop-shadow-color: #00000022;
-    drop-shadow-offset-y: 2px;
-
-    Rectangle {
-        x: 1px;
-        y: 1px;
-        width: parent.width - 2px;
-        height: 1px;
-        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff24 50%, #ffffff00 100%);
-    }
 
     selected-indicator := Rectangle {
         x: root.selected-index == 0
@@ -153,25 +156,14 @@ export component SegmentedControl inherits Rectangle {
         y: 3px;
         width: root.segment-width;
         height: root.height - 6px;
-        background: @linear-gradient(135deg, #0a84ff36 0%, #64d2ff18 100%);
-        border-width: 1px;
-        border-color: #64d2ff62;
+        background: NumFlowTheme.control-selected;
+        border-width: 0px;
+        border-color: transparent;
         border-radius: NumFlowTheme.radius-small;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #0a84ff24;
-        drop-shadow-offset-y: 1px;
-
-        Rectangle {
-            x: 1px;
-            y: 1px;
-            width: parent.width - 2px;
-            height: 1px;
-            background: @linear-gradient(90deg, #ffffff08 0%, #ffffff42 50%, #ffffff08 100%);
-        }
 
         animate x {
-            duration: root.reduced-motion ? 0ms : 210ms;
-            easing: ease-out-back;
+            duration: root.reduced-motion ? 0ms : 150ms;
+            easing: ease-out;
         }
     }
 
@@ -212,7 +204,7 @@ export component SegmentedControl inherits Rectangle {
     }
 }
 
-export component GlassToggle inherits Rectangle {
+export component Toggle inherits Rectangle {
     in-out property <bool> checked: false;
     in property <bool> enabled: true;
     in property <bool> reduced-motion: false;
@@ -221,34 +213,17 @@ export component GlassToggle inherits Rectangle {
 
     min-width: 44px;
     max-width: 44px;
-    min-height: 26px;
-    max-height: 26px;
-    border-radius: 13px;
+    min-height: 28px;
+    max-height: 28px;
+    border-radius: 14px;
     border-width: keyboard-focus.has-focus ? 2px : 1px;
     border-color: keyboard-focus.has-focus
         ? NumFlowTheme.focus-ring
         : root.checked
-            ? #64d2ff70
-            : NumFlowTheme.glass-border;
-    background: root.checked
-        ? @linear-gradient(100deg, #0a84ff 0%, #46a9ff 58%, #64d2ff 100%)
-        : NumFlowTheme.material-raised;
+            ? NumFlowTheme.accent
+            : NumFlowTheme.separator;
+    background: root.checked ? NumFlowTheme.accent : NumFlowTheme.control-surface;
     opacity: root.enabled ? 1 : 0.48;
-    drop-shadow-blur: root.checked ? 8px : 4px;
-    drop-shadow-color: root.checked ? #0a84ff32 : #00000020;
-    drop-shadow-offset-y: 1px;
-
-    Rectangle {
-        width: parent.width;
-        height: parent.height;
-        border-radius: parent.border-radius;
-        background: @linear-gradient(180deg, #ffffff20 0%, #ffffff00 48%);
-        opacity: interaction.has-hover && root.enabled ? 1 : 0.55;
-        animate opacity {
-            duration: root.reduced-motion ? 0ms : 120ms;
-            easing: ease-out;
-        }
-    }
 
     knob := Rectangle {
         x: root.checked ? root.width - self.width - 4px : 4px;
@@ -256,14 +231,11 @@ export component GlassToggle inherits Rectangle {
         width: 18px;
         height: 18px;
         border-radius: 9px;
-        background: #ffffff;
-        drop-shadow-blur: 5px;
-        drop-shadow-color: #00000055;
-        drop-shadow-offset-y: 1px;
+        background: NumFlowTheme.accent-foreground;
 
         animate x {
-            duration: root.reduced-motion ? 0ms : 200ms;
-            easing: ease-out-back;
+            duration: root.reduced-motion ? 0ms : 160ms;
+            easing: ease-out;
         }
     }
 
@@ -308,8 +280,7 @@ export component GlassToggle inherits Rectangle {
     }
 }
 
-
-export component GlassSlider inherits Rectangle {
+export component SliderControl inherits Rectangle {
     in-out property <float> value: 0;
     in property <float> minimum: 0;
     in property <float> maximum: 100;
@@ -322,8 +293,8 @@ export component GlassSlider inherits Rectangle {
         ? Math.max(0, Math.min(1, (root.value - root.minimum) / (root.maximum - root.minimum)))
         : 0;
 
-    min-height: 26px;
-    max-height: 26px;
+    min-height: NumFlowTheme.control-height;
+    max-height: NumFlowTheme.control-height;
     background: transparent;
     opacity: root.enabled ? 1 : 0.45;
 
@@ -333,7 +304,7 @@ export component GlassSlider inherits Rectangle {
         width: root.width - 18px;
         height: 4px;
         border-radius: 2px;
-        background: NumFlowTheme.control;
+        background: NumFlowTheme.control-surface;
     }
 
     Rectangle {
@@ -342,7 +313,7 @@ export component GlassSlider inherits Rectangle {
         width: track.width * root.fraction;
         height: track.height;
         border-radius: track.border-radius;
-        background: @linear-gradient(90deg, #0a84ff 0%, #46a9ff 58%, #64d2ff 100%);
+        background: NumFlowTheme.accent;
     }
 
     focus-ring := Rectangle {
@@ -354,21 +325,18 @@ export component GlassSlider inherits Rectangle {
         border-width: input.has-focus ? 2px : 0px;
         border-color: NumFlowTheme.focus-ring;
         background: transparent;
-        opacity: input.has-focus ? 0.9 : 0;
+        opacity: input.has-focus ? 1 : 0;
     }
 
     knob := Rectangle {
         x: track.x + track.width * root.fraction - self.width / 2;
         y: (root.height - self.height) / 2;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        background: #ffffff;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: NumFlowTheme.accent-foreground;
         border-width: 2px;
-        border-color: #64d2ff80;
-        drop-shadow-blur: 5px;
-        drop-shadow-color: #00000045;
-        drop-shadow-offset-y: 1px;
+        border-color: NumFlowTheme.accent;
     }
 
     input := Slider {
@@ -394,17 +362,17 @@ export component UtilityButton inherits Rectangle {
     in property <string> a11y-label: "";
     callback clicked();
 
-    min-height: 32px;
-    max-height: 32px;
-    min-width: 32px;
+    min-height: NumFlowTheme.control-height;
+    max-height: NumFlowTheme.control-height;
+    min-width: NumFlowTheme.control-height;
     border-radius: NumFlowTheme.radius-small;
     border-width: keyboard-focus.has-focus ? 2px : 1px;
     border-color: keyboard-focus.has-focus
         ? NumFlowTheme.focus-ring
         : root.destructive
-            ? #ff453a50
-            : NumFlowTheme.glass-border;
-    background: NumFlowTheme.material-raised;
+            ? NumFlowTheme.destructive
+            : NumFlowTheme.separator;
+    background: NumFlowTheme.control-surface;
     opacity: root.enabled ? 1 : 0.48;
 
     hover-surface := Rectangle {
@@ -412,28 +380,20 @@ export component UtilityButton inherits Rectangle {
         height: parent.height;
         border-radius: parent.border-radius;
         background: interaction.pressed
-            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
-            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover;
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.surface-glass-pressed
+            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.control-hover;
         opacity: interaction.pressed ? 1 : interaction.has-hover && root.enabled ? 1 : 0;
         animate opacity {
-            duration: root.reduced-motion ? 0ms : 120ms;
+            duration: root.reduced-motion ? 0ms : 140ms;
             easing: ease-out;
         }
     }
 
-    Rectangle {
-        x: 1px;
-        y: 1px;
-        width: parent.width - 2px;
-        height: 1px;
-        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff24 50%, #ffffff00 100%);
-    }
-
     Text {
         text: root.more-glyph ? "" : root.text;
-        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.text-primary;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 550;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -444,7 +404,7 @@ export component UtilityButton inherits Rectangle {
         width: 3px;
         height: 3px;
         border-radius: 2px;
-        background: NumFlowTheme.label;
+        background: NumFlowTheme.text-primary;
         opacity: root.more-glyph ? 0.88 : 0;
     }
     Rectangle {
@@ -453,7 +413,7 @@ export component UtilityButton inherits Rectangle {
         width: 3px;
         height: 3px;
         border-radius: 2px;
-        background: NumFlowTheme.label;
+        background: NumFlowTheme.text-primary;
         opacity: root.more-glyph ? 0.88 : 0;
     }
     Rectangle {
@@ -462,7 +422,7 @@ export component UtilityButton inherits Rectangle {
         width: 3px;
         height: 3px;
         border-radius: 2px;
-        background: NumFlowTheme.label;
+        background: NumFlowTheme.text-primary;
         opacity: root.more-glyph ? 0.88 : 0;
     }
 
@@ -495,8 +455,8 @@ export component DisclosureRow inherits Rectangle {
     in property <bool> reduced-motion: false;
     callback toggled();
 
-    min-height: 34px;
-    max-height: 34px;
+    min-height: NumFlowTheme.row-height;
+    max-height: NumFlowTheme.row-height;
     border-radius: NumFlowTheme.radius-small;
     background: transparent;
     border-width: keyboard-focus.has-focus ? 2px : 0px;
@@ -506,10 +466,10 @@ export component DisclosureRow inherits Rectangle {
         width: parent.width;
         height: parent.height;
         border-radius: parent.border-radius;
-        background: interaction.pressed ? NumFlowTheme.pressed : NumFlowTheme.hover;
+        background: interaction.pressed ? NumFlowTheme.surface-glass-pressed : NumFlowTheme.control-hover;
         opacity: interaction.pressed ? 1 : interaction.has-hover ? 1 : 0;
         animate opacity {
-            duration: root.reduced-motion ? 0ms : 120ms;
+            duration: root.reduced-motion ? 0ms : 140ms;
             easing: ease-out;
         }
     }
@@ -517,35 +477,28 @@ export component DisclosureRow inherits Rectangle {
     HorizontalLayout {
         padding-left: 2px;
         padding-right: 4px;
-        spacing: 8px;
+        spacing: NumFlowTheme.spacing-sm;
         cross-axis-alignment: center;
 
         Text {
             text: root.label;
-            color: NumFlowTheme.label;
+            color: NumFlowTheme.text-primary;
             font-size: 12px;
-            font-weight: 500;
+            font-weight: 550;
         }
 
         Rectangle { horizontal-stretch: 1; background: transparent; }
 
         Text {
             text: "›";
-            color: root.expanded ? NumFlowTheme.accent-secondary : NumFlowTheme.secondary-label;
+            color: root.expanded ? NumFlowTheme.accent : NumFlowTheme.text-secondary;
             font-size: 17px;
             font-weight: 500;
-            opacity: interaction.has-hover || root.expanded ? 1 : 0.78;
+            opacity: interaction.has-hover || root.expanded ? 1 : 0.82;
             transform-rotation: root.expanded ? 90deg : 0deg;
-            transform-scale: interaction.pressed ? 0.92 : 1;
-            animate opacity {
-                duration: root.reduced-motion ? 0ms : 120ms;
-            }
+            animate opacity { duration: root.reduced-motion ? 0ms : 140ms; }
             animate transform-rotation {
-                duration: root.reduced-motion ? 0ms : 210ms;
-                easing: ease-out-back;
-            }
-            animate transform-scale {
-                duration: root.reduced-motion ? 0ms : 120ms;
+                duration: root.reduced-motion ? 0ms : 150ms;
                 easing: ease-out;
             }
         }
@@ -590,21 +543,13 @@ export component MappingRow inherits Rectangle {
             min-height: 22px;
             max-height: 22px;
             border-radius: 6px;
-            background: NumFlowTheme.material-raised;
+            background: NumFlowTheme.control-surface;
             border-width: 1px;
-            border-color: NumFlowTheme.glass-border;
-
-            Rectangle {
-                x: 1px;
-                y: 1px;
-                width: parent.width - 2px;
-                height: 1px;
-                background: #ffffff20;
-            }
+            border-color: NumFlowTheme.border-subtle;
 
             Text {
                 text: root.key-label;
-                color: NumFlowTheme.label;
+                color: NumFlowTheme.text-primary;
                 font-size: 11px;
                 font-weight: 600;
                 horizontal-alignment: center;
@@ -614,7 +559,7 @@ export component MappingRow inherits Rectangle {
 
         Text {
             text: root.action-label;
-            color: NumFlowTheme.secondary-label;
+            color: NumFlowTheme.text-secondary;
             font-size: 11px;
             overflow: elide;
         }
@@ -639,11 +584,11 @@ export component MenuAction inherits Rectangle {
         height: parent.height;
         border-radius: parent.border-radius;
         background: interaction.pressed
-            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.pressed
-            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.hover;
+            ? root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.surface-glass-pressed
+            : root.destructive ? NumFlowTheme.destructive-soft : NumFlowTheme.control-hover;
         opacity: interaction.pressed ? 1 : interaction.has-hover ? 1 : 0;
         animate opacity {
-            duration: root.reduced-motion ? 0ms : 120ms;
+            duration: root.reduced-motion ? 0ms : 140ms;
             easing: ease-out;
         }
     }
@@ -652,7 +597,7 @@ export component MenuAction inherits Rectangle {
         x: 10px;
         width: parent.width - 20px;
         text: root.text;
-        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.label;
+        color: root.destructive ? NumFlowTheme.destructive : NumFlowTheme.text-primary;
         font-size: 12px;
         font-weight: root.destructive ? 550 : 450;
         vertical-alignment: center;
