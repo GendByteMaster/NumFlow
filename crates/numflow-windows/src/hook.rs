@@ -1345,6 +1345,13 @@ fn handle_foreground_notification(
     session_window: Option<HWND>,
     window: HWND,
 ) {
+    let state = InputRuntimeState::from_raw(INPUT_RUNTIME_STATE.load(Ordering::Acquire));
+    let session_lock_pending = SESSION_LOCK_PENDING.load(Ordering::Acquire);
+    let resume_guard = RESUME_NUM_LOCK_GUARD.load(Ordering::Acquire);
+    if !should_process_foreground_notification(state, session_lock_pending, resume_guard) {
+        return;
+    }
+
     if let Some(target) = crate::foreground_process_info_for_window(window) {
         eprintln!(
             "NumFlow: foreground changed -> {} (pid={}, integrity={}, elevated={:?})",
@@ -1355,18 +1362,6 @@ fn handle_foreground_notification(
         );
     } else {
         eprintln!("NumFlow: foreground changed -> <unavailable>");
-    }
-
-    let state = InputRuntimeState::from_raw(INPUT_RUNTIME_STATE.load(Ordering::Acquire));
-    if matches!(state, InputRuntimeState::Suspended) || SESSION_LOCK_PENDING.load(Ordering::Acquire)
-    {
-        eprintln!("NumFlow: foreground change observed while input runtime is suspended");
-        return;
-    }
-
-    if RESUME_NUM_LOCK_GUARD.load(Ordering::Acquire) {
-        eprintln!("NumFlow: foreground change deferred until input recovery is finalized");
-        return;
     }
 
     let outcome = resync_input_state(
@@ -1394,6 +1389,14 @@ fn handle_foreground_notification(
             true,
         );
     }
+}
+
+fn should_process_foreground_notification(
+    state: InputRuntimeState,
+    session_lock_pending: bool,
+    resume_guard: bool,
+) -> bool {
+    !matches!(state, InputRuntimeState::Suspended) && !session_lock_pending && !resume_guard
 }
 
 fn handle_keyboard_device_notification(
@@ -2033,7 +2036,7 @@ mod tests {
         infer_num_lock_from_numpad, keyboard_device_notification_filter, num_lock_replay_inputs,
         num_lock_transition, numpad_mode_reconcile_action, ordered_power_notification,
         ordered_session_notification, power_notification_message, raw_keyboard_removal_device,
-        resume_guard_should_finalize, should_rearm_input,
+        resume_guard_should_finalize, should_process_foreground_notification, should_rearm_input,
     };
     use crate::{KeyState, PhysicalKeyEvent};
 
@@ -2113,6 +2116,35 @@ mod tests {
             InputResyncReason::SessionUnlock,
             InputRuntimeState::Suspended,
             true,
+        ));
+    }
+
+    #[test]
+    fn foreground_notifications_are_deferred_during_input_recovery() {
+        assert!(!should_process_foreground_notification(
+            InputRuntimeState::Suspended,
+            false,
+            false,
+        ));
+        assert!(!should_process_foreground_notification(
+            InputRuntimeState::Running,
+            true,
+            false,
+        ));
+        assert!(!should_process_foreground_notification(
+            InputRuntimeState::Running,
+            false,
+            true,
+        ));
+        assert!(should_process_foreground_notification(
+            InputRuntimeState::Recovering,
+            false,
+            false,
+        ));
+        assert!(should_process_foreground_notification(
+            InputRuntimeState::Running,
+            false,
+            false,
         ));
     }
 

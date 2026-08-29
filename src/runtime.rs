@@ -699,7 +699,7 @@ mod platform {
 
         *desktop_active = owns_input;
         if !owns_input {
-            fail_safe(
+            quiesce_for_desktop_switch(
                 machine,
                 hook,
                 normalizer,
@@ -989,19 +989,7 @@ mod platform {
         event_sink: &RuntimeEventSink,
         reason: &str,
     ) {
-        machine.motion.stop();
-        normalizer.reset();
-        let effects = machine.controller.shutdown();
-        let _ = machine.execute_effects(&effects);
-        let release_error = machine.pointer.release_all().err();
-        hook.emergency_disable();
-
-        if !effects.is_empty() {
-            event_sink.send(RuntimeEvent::Effects {
-                state: machine.snapshot(),
-                effects,
-            });
-        }
+        let release_error = quiesce_runtime(machine, hook, normalizer, event_sink);
         let message = release_error.map_or_else(
             || reason.to_owned(),
             |error| format!("{reason}; additionally failed to release pointer state: {error}"),
@@ -1010,6 +998,50 @@ mod platform {
             state: machine.snapshot(),
             reason: message,
         });
+    }
+
+    fn quiesce_for_desktop_switch(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+        reason: &str,
+    ) {
+        if let Some(error) = quiesce_runtime(machine, hook, normalizer, event_sink) {
+            // Losing the input desktop is expected during secure-desktop/session transitions. Only
+            // a failure to release injected pointer state is a fault that needs user-visible error
+            // handling here.
+            event_sink.send(RuntimeEvent::Fault {
+                state: machine.snapshot(),
+                reason: format!("{reason}; failed to release pointer state: {error}"),
+            });
+        }
+    }
+
+    fn quiesce_runtime(
+        machine: &mut RuntimeMachine<WindowsPointer>,
+        hook: &KeyboardHook,
+        normalizer: &mut KeyboardEventNormalizer,
+        event_sink: &RuntimeEventSink,
+    ) -> Option<String> {
+        machine.motion.stop();
+        normalizer.reset();
+        let effects = machine.controller.shutdown();
+        let _ = machine.execute_effects(&effects);
+        let release_error = machine
+            .pointer
+            .release_all()
+            .err()
+            .map(|error| error.to_string());
+        hook.emergency_disable();
+
+        if !effects.is_empty() {
+            event_sink.send(RuntimeEvent::Effects {
+                state: machine.snapshot(),
+                effects,
+            });
+        }
+        release_error
     }
 
     #[cfg(test)]
