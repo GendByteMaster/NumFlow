@@ -1,0 +1,71 @@
+; NumFlow Windows Input Backend v2 - VirtualBox PASS_THROUGH test package.
+;
+; SAFETY: this package is restricted to a disposable VirtualBox Windows VM.
+; It must not be installed or staged on the development host.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Keyboard
+ClassGuid={4D36E96B-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+CatalogFile=numflow-kbd-filter.cat
+DriverVer=08/29/2026,0.1.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[SourceDisksNames]
+1=%DiskName%,,,
+
+[SourceDisksFiles]
+numflow-kbd-filter.sys=1
+
+[Manufacturer]
+%ManufacturerName%=NumFlow,NT$ARCH$.10.0...19041
+
+[NumFlow.NT$ARCH$.10.0...19041]
+%DeviceDescription%=NumFlowKbdFilter_Install,*PNP0303
+
+[NumFlowKbdFilter_Install.NT]
+Include=keyboard.inf
+Needs=STANDARD_Inst
+CopyFiles=NumFlowKbdFilter.CopyFiles
+
+[NumFlowKbdFilter.CopyFiles]
+numflow-kbd-filter.sys
+
+[NumFlowKbdFilter_Install.NT.Services]
+AddService=numflow-kbd-filter,,NumFlowKbdFilter_Service
+Include=keyboard.inf
+Needs=STANDARD_Inst.Services
+
+[NumFlowKbdFilter_Service]
+DisplayName=%ServiceDescription%
+ServiceType=1
+StartType=3
+ErrorControl=0
+ServiceBinary=%13%\numflow-kbd-filter.sys
+
+[NumFlowKbdFilter_Install.NT.HW]
+Include=keyboard.inf
+Needs=STANDARD_Inst.HW
+
+[NumFlowKbdFilter_Install.NT.Filters]
+AddFilter=numflow-kbd-filter,,NumFlowKbdFilter_Filter
+
+[NumFlowKbdFilter_Filter]
+FilterPosition=Upper
+
+[NumFlowKbdFilter_Install.NT.Wdf]
+KmdfService=numflow-kbd-filter,NumFlowKbdFilter_Wdf
+
+[NumFlowKbdFilter_Wdf]
+KmdfLibraryVersion=$KMDFVERSION$
+
+[Strings]
+ProviderName="NumFlow"
+ManufacturerName="NumFlow"
+DeviceDescription="NumFlow Keyboard Filter (VirtualBox PASS_THROUGH test)"
+ServiceDescription="NumFlow Keyboard Filter"
+DiskName="NumFlow Keyboard Filter installation media"
