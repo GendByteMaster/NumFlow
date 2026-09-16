@@ -22,19 +22,25 @@ pub const MAX_PAYLOAD_LEN: usize = 16;
 const ACK_MESSAGE_ID: u16 = 10;
 
 /// Why a helper refused or could not complete a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RejectReason {
     /// The request was accepted.
+    #[error("no rejection")]
     None,
     /// The frame was valid but the message kind is not part of the whitelist.
+    #[error("unknown command")]
     UnknownCommand,
     /// The frame carried a different protocol version.
+    #[error("protocol version mismatch")]
     ProtocolVersion,
     /// The payload length or payload content did not match the message kind.
+    #[error("invalid payload")]
     InvalidPayload,
     /// `SendInput` did not accept the complete pointer sequence.
+    #[error("pointer injection failed")]
     InjectionFailed,
     /// The helper is connected but has not accepted an owner yet.
+    #[error("helper is not ready")]
     NotReady,
 }
 
@@ -52,14 +58,15 @@ impl RejectReason {
     }
 
     #[must_use]
-    pub const fn from_code(code: u8) -> Self {
+    pub const fn from_code(code: u8) -> Option<Self> {
         match code {
-            1 => Self::UnknownCommand,
-            2 => Self::ProtocolVersion,
-            3 => Self::InvalidPayload,
-            4 => Self::InjectionFailed,
-            5 => Self::NotReady,
-            _ => Self::None,
+            0 => Some(Self::None),
+            1 => Some(Self::UnknownCommand),
+            2 => Some(Self::ProtocolVersion),
+            3 => Some(Self::InvalidPayload),
+            4 => Some(Self::InjectionFailed),
+            5 => Some(Self::NotReady),
+            _ => None,
         }
     }
 }
@@ -150,19 +157,25 @@ pub enum Message {
 }
 
 /// A protocol-level rejection. Transport errors are reported separately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
     /// The frame magic did not match [`PROTOCOL_MAGIC`].
+    #[error("invalid protocol magic")]
     BadMagic,
     /// The frame used a different [`PROTOCOL_VERSION`].
+    #[error("unsupported protocol version")]
     BadVersion,
     /// The message id is not part of the whitelist.
+    #[error("unknown protocol command")]
     UnknownCommand,
     /// The payload length did not match the message kind or exceeded [`MAX_PAYLOAD_LEN`].
+    #[error("invalid protocol payload length")]
     BadPayloadLength,
     /// A payload field carried a value outside the whitelisted range.
+    #[error("invalid protocol payload")]
     InvalidPayload,
     /// A header announced more payload than [`MAX_PAYLOAD_LEN`].
+    #[error("protocol payload exceeds the maximum size")]
     OversizePayload,
 }
 
@@ -204,7 +217,8 @@ impl Message {
         frame.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
         frame.extend_from_slice(&self.message_id().to_le_bytes());
         frame.extend_from_slice(
-            &u16::try_from(self.payload_len()).expect("protocol payload length fits in u16")
+            &u16::try_from(self.payload_len())
+                .expect("protocol payload length fits in u16")
                 .to_le_bytes(),
         );
         self.append_payload(&mut frame);
@@ -365,20 +379,37 @@ fn decode_payload(message_id: u16, payload: &[u8]) -> Result<Message, ProtocolEr
         }
         7 => Ok(Message::ReleaseAll),
         8 => Ok(Message::Shutdown),
-        9 => Ok(Message::HandshakeAccepted {
-            server_pid: read_u32(payload)?,
-            ui_access: is_flag_byte(*payload.get(4).ok_or(ProtocolError::InvalidPayload)?),
-        }),
-        10 => Ok(Message::Ack {
-            accepted: is_flag_byte(*payload.first().ok_or(ProtocolError::InvalidPayload)?),
-            detail: RejectReason::from_code(*payload.get(1).ok_or(ProtocolError::InvalidPayload)?),
-        }),
+        9 => {
+            let reserved = *payload.get(5).ok_or(ProtocolError::InvalidPayload)?;
+            if reserved != 0 {
+                return Err(ProtocolError::InvalidPayload);
+            }
+            Ok(Message::HandshakeAccepted {
+                server_pid: read_u32(payload)?,
+                ui_access: parse_flag(*payload.get(4).ok_or(ProtocolError::InvalidPayload)?)?,
+            })
+        }
+        10 => {
+            let accepted = parse_flag(*payload.first().ok_or(ProtocolError::InvalidPayload)?)?;
+            let detail = RejectReason::from_code(
+                *payload.get(1).ok_or(ProtocolError::InvalidPayload)?,
+            )
+            .ok_or(ProtocolError::InvalidPayload)?;
+            if accepted != (detail == RejectReason::None) {
+                return Err(ProtocolError::InvalidPayload);
+            }
+            Ok(Message::Ack { accepted, detail })
+        }
         _ => Err(ProtocolError::UnknownCommand),
     }
 }
 
-const fn is_flag_byte(value: u8) -> bool {
-    value == 1
+const fn parse_flag(value: u8) -> Result<bool, ProtocolError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(ProtocolError::InvalidPayload),
+    }
 }
 
 const fn button_code(button: MouseButton) -> u8 {
@@ -424,8 +455,8 @@ const fn read_i32(payload: &[u8], offset: usize) -> Result<i32, ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonAction, FrameDecoder, HEADER_LEN, MAX_PAYLOAD_LEN, Message, ProtocolError,
-        RejectReason, PROTOCOL_MAGIC, PROTOCOL_VERSION,
+        ButtonAction, FrameDecoder, HEADER_LEN, MAX_PAYLOAD_LEN, Message, PROTOCOL_MAGIC,
+        PROTOCOL_VERSION, ProtocolError, RejectReason,
     };
     use numflow_core::MouseButton;
 
@@ -520,7 +551,10 @@ mod tests {
         let payload = &frame[HEADER_LEN..];
 
         header[0] ^= 0xFF;
-        assert_eq!(Message::decode(&header, payload), Err(ProtocolError::BadMagic));
+        assert_eq!(
+            Message::decode(&header, payload),
+            Err(ProtocolError::BadMagic)
+        );
         header[0] = u8::try_from(PROTOCOL_MAGIC & 0xFF).expect("low magic byte fits in u8");
 
         header[4] = 0x99;
@@ -569,6 +603,53 @@ mod tests {
     }
 
     #[test]
+    fn boolean_and_reject_fields_are_strictly_validated() {
+        let handshake = Message::HandshakeAccepted {
+            server_pid: 54_321,
+            ui_access: false,
+        }
+        .encode();
+        let mut invalid_flag = handshake.clone();
+        invalid_flag[HEADER_LEN + 4] = 2;
+        assert_eq!(
+            Message::decode(&invalid_flag[..HEADER_LEN], &invalid_flag[HEADER_LEN..]),
+            Err(ProtocolError::InvalidPayload)
+        );
+
+        let mut invalid_reserved = handshake;
+        invalid_reserved[HEADER_LEN + 5] = 1;
+        assert_eq!(
+            Message::decode(
+                &invalid_reserved[..HEADER_LEN],
+                &invalid_reserved[HEADER_LEN..]
+            ),
+            Err(ProtocolError::InvalidPayload)
+        );
+
+        let ack = Message::Ack {
+            accepted: false,
+            detail: RejectReason::InjectionFailed,
+        }
+        .encode();
+        let mut invalid_reason = ack.clone();
+        invalid_reason[HEADER_LEN + 1] = 0xFF;
+        assert_eq!(
+            Message::decode(&invalid_reason[..HEADER_LEN], &invalid_reason[HEADER_LEN..]),
+            Err(ProtocolError::InvalidPayload)
+        );
+
+        let mut contradictory_ack = ack;
+        contradictory_ack[HEADER_LEN] = 1;
+        assert_eq!(
+            Message::decode(
+                &contradictory_ack[..HEADER_LEN],
+                &contradictory_ack[HEADER_LEN..]
+            ),
+            Err(ProtocolError::InvalidPayload)
+        );
+    }
+
+    #[test]
     fn handshake_frames_carry_verified_peer_data() {
         let request = Message::Handshake { client_pid: 12_345 }.encode();
         assert_eq!(&request[HEADER_LEN..], &12_345_u32.to_le_bytes());
@@ -586,7 +667,3 @@ mod tests {
         assert_eq!(response[HEADER_LEN + 5], 0);
     }
 }
-
-
-
-
