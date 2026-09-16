@@ -64,7 +64,7 @@ fn embed_windows_executable_icon() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| io::Error::other("generated icon path is not valid UTF-8"))?;
     let mut resources = winresource::WindowsResource::new();
     resources.set_icon(icon_path);
-    resources.set_manifest(windows_manifest());
+    resources.set_manifest(&windows_manifest());
     resources.append_rc_content(
         r#"
 LANGUAGE 0x9, 0x1
