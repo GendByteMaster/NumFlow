@@ -15,6 +15,7 @@ fn main() {
     .join("numflow-input.manifest");
 
     println!("cargo:rustc-link-arg-bin=numflow-input=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg-bin=numflow-input=/MANIFESTUAC:level='asInvoker' uiAccess='true'");
     println!(
         "cargo:rustc-link-arg-bin=numflow-input=/MANIFESTINPUT:{}",
         manifest.display()
