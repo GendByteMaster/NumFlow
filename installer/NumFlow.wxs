@@ -22,6 +22,9 @@
               WorkingDirectory="INSTALLFOLDER" />
           </File>
         </Component>
+        <Component Id="NumFlowInputExecutable" Guid="*">
+          <File Id="NumFlowInputExe" Source="$(NumFlowInputExe)" KeyPath="yes" />
+        </Component>
         <Component Id="NumFlowSecureExecutable" Guid="*">
           <File Id="NumFlowSecureExe" Source="$(NumFlowSecureExe)" KeyPath="yes" />
         </Component>
@@ -66,6 +69,7 @@
 
     <Feature Id="MainFeature" Title="NumFlow" Level="1">
       <ComponentRef Id="NumFlowExecutable" />
+      <ComponentRef Id="NumFlowInputExecutable" />
       <ComponentRef Id="NumFlowSecureExecutable" />
       <ComponentRef Id="NumFlowAssistiveTechnologyRegistration" />
     </Feature>
