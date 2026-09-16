@@ -1,6 +1,7 @@
 use std::{
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 
 use numflow_core::{MouseButton, PointerBackend};
@@ -10,11 +11,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SendInput,
 };
 
+use crate::{
+    desktop::{RuntimeKind, current_runtime_kind},
+    diagnostics::{current_process_elevated, current_process_ui_access},
+    input_protocol::{ButtonAction, Message},
+    input_service::{
+        HelperClient, InputServiceError, RECONNECT_COOLDOWN, connect_or_spawn_helper,
+        reconnect_allowed,
+    },
+};
+
 static MOUSE_HOLD_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[must_use]
 pub fn mouse_hold_active() -> bool {
     MOUSE_HOLD_ACTIVE.load(Ordering::Acquire)
+}
+
+fn set_mouse_hold_active(active: bool) {
+    MOUSE_HOLD_ACTIVE.store(active, Ordering::Release);
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -25,6 +40,16 @@ pub enum PointerError {
     InjectionIncomplete { expected: u32, inserted: u32 },
     #[error("cannot click {button:?} while NumFlow is tracking that button as held")]
     ButtonAlreadyHeld { button: MouseButton },
+    #[error("UIAccess input helper failed: {reason}")]
+    Helper { reason: String },
+}
+
+impl From<InputServiceError> for PointerError {
+    fn from(error: InputServiceError) -> Self {
+        Self::Helper {
+            reason: error.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,26 +89,36 @@ impl PressedButtons {
     }
 }
 
+/// Direct `SendInput` implementation used both by NumFlow fallback and inside the UIAccess helper.
 #[derive(Debug, Default)]
-pub struct WindowsPointer {
+pub(crate) struct DirectWindowsPointer {
     pressed: PressedButtons,
 }
 
-impl WindowsPointer {
-    #[must_use]
-    pub const fn is_button_held(&self, button: MouseButton) -> bool {
+impl DirectWindowsPointer {
+    const fn is_button_held(&self, button: MouseButton) -> bool {
         self.pressed.contains(button)
+    }
+
+    const fn has_held_buttons(&self) -> bool {
+        !self.pressed.is_empty()
+    }
+
+    fn ensure_clickable(&self, button: MouseButton) -> Result<(), PointerError> {
+        if self.pressed.contains(button) {
+            return Err(PointerError::ButtonAlreadyHeld { button });
+        }
+        Ok(())
     }
 }
 
-impl PointerBackend for WindowsPointer {
+impl PointerBackend for DirectWindowsPointer {
     type Error = PointerError;
 
     fn move_relative(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
         if dx == 0 && dy == 0 {
             return Ok(());
         }
-
         send_inputs(&[mouse_input(dx, dy, MOUSEEVENTF_MOVE)])
     }
 
@@ -94,7 +129,7 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&[mouse_input(0, 0, button_down_flag(button))])?;
         self.pressed.insert(button);
-        MOUSE_HOLD_ACTIVE.store(true, Ordering::Release);
+        set_mouse_hold_active(true);
         Ok(())
     }
 
@@ -105,7 +140,7 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&[mouse_input(0, 0, button_up_flag(button))])?;
         self.pressed.remove(button);
-        MOUSE_HOLD_ACTIVE.store(!self.pressed.is_empty(), Ordering::Release);
+        set_mouse_hold_active(!self.pressed.is_empty());
         Ok(())
     }
 
@@ -127,15 +162,195 @@ impl PointerBackend for WindowsPointer {
 
         send_inputs(&inputs)?;
         self.pressed.clear();
-        MOUSE_HOLD_ACTIVE.store(false, Ordering::Release);
+        set_mouse_hold_active(false);
         Ok(())
     }
 }
 
+impl Drop for DirectWindowsPointer {
+    fn drop(&mut self) {
+        let _ = self.release_all();
+    }
+}
+
+/// Pointer backend for the normal NumFlow runtime.
+///
+/// Installed production builds prefer the signed `numflow-input.exe` UIAccess helper. Development,
+/// portable, elevated, and secure runtimes keep using direct `SendInput` when the helper is absent
+/// or Windows did not grant its UIAccess token.
+#[derive(Debug)]
+pub struct WindowsPointer {
+    direct: DirectWindowsPointer,
+    helper: Option<HelperClient>,
+    helper_pressed: PressedButtons,
+    last_helper_attempt: Option<Instant>,
+    helper_disabled: bool,
+}
+
+impl Default for WindowsPointer {
+    fn default() -> Self {
+        let helper_disabled = current_runtime_kind() != RuntimeKind::Normal
+            || current_process_elevated().unwrap_or(false)
+            || current_process_ui_access().unwrap_or(false);
+        let mut pointer = Self {
+            direct: DirectWindowsPointer::default(),
+            helper: None,
+            helper_pressed: PressedButtons::default(),
+            last_helper_attempt: None,
+            helper_disabled,
+        };
+        pointer.ensure_helper();
+        pointer
+    }
+}
+
 impl WindowsPointer {
-    fn ensure_clickable(&self, button: MouseButton) -> Result<(), PointerError> {
-        if self.pressed.contains(button) {
+    #[must_use]
+    pub const fn is_button_held(&self, button: MouseButton) -> bool {
+        self.helper_pressed.contains(button) || self.direct.is_button_held(button)
+    }
+
+    fn ensure_helper(&mut self) {
+        if self.helper_disabled || self.helper.is_some() || self.direct.has_held_buttons() {
+            return;
+        }
+
+        let now = Instant::now();
+        if !reconnect_allowed(self.last_helper_attempt, now, RECONNECT_COOLDOWN) {
+            return;
+        }
+        self.last_helper_attempt = Some(now);
+
+        match connect_or_spawn_helper() {
+            Ok(mut helper) if helper.ui_access() => {
+                eprintln!(
+                    "NumFlow: UIAccess input helper connected (pid={})",
+                    helper.server_pid()
+                );
+                self.helper = Some(helper);
+            }
+            Ok(mut helper) => {
+                eprintln!(
+                    "NumFlow: input helper started without UIAccess; using direct SendInput fallback"
+                );
+                let _ = helper.shutdown();
+                self.helper_disabled = true;
+            }
+            Err(InputServiceError::HelperMissing) => {
+                self.helper_disabled = true;
+            }
+            Err(error) => {
+                eprintln!("NumFlow: input helper unavailable: {error}");
+            }
+        }
+    }
+
+    fn helper_request(&mut self, message: Message) -> Option<Result<(), PointerError>> {
+        self.ensure_helper();
+        let helper = self.helper.as_mut()?;
+        let result = helper.request(message).map_err(PointerError::from);
+        if result.is_err() {
+            self.helper.take();
+            self.helper_pressed.clear();
+            set_mouse_hold_active(self.direct.has_held_buttons());
+        }
+        Some(result)
+    }
+
+    fn helper_active(&self) -> bool {
+        self.helper.is_some()
+    }
+}
+
+impl PointerBackend for WindowsPointer {
+    type Error = PointerError;
+
+    fn move_relative(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
+        if dx == 0 && dy == 0 {
+            return Ok(());
+        }
+        if let Some(result) = self.helper_request(Message::PointerMove { dx, dy }) {
+            return result;
+        }
+        self.direct.move_relative(dx, dy)
+    }
+
+    fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        if self.helper_pressed.contains(button) || self.direct.is_button_held(button) {
+            return Ok(());
+        }
+
+        if self.helper_active() || (!self.helper_disabled && !self.direct.has_held_buttons()) {
+            if let Some(result) = self.helper_request(Message::PointerButton {
+                button,
+                action: ButtonAction::Down,
+            }) {
+                result?;
+                self.helper_pressed.insert(button);
+                set_mouse_hold_active(true);
+                return Ok(());
+            }
+        }
+
+        self.direct.button_down(button)
+    }
+
+    fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        if self.helper_pressed.contains(button) {
+            let Some(result) = self.helper_request(Message::PointerButton {
+                button,
+                action: ButtonAction::Up,
+            }) else {
+                return Err(PointerError::Helper {
+                    reason: "helper connection disappeared while a button was held".to_owned(),
+                });
+            };
+            result?;
+            self.helper_pressed.remove(button);
+            set_mouse_hold_active(
+                !self.helper_pressed.is_empty() || self.direct.has_held_buttons(),
+            );
+            return Ok(());
+        }
+        self.direct.button_up(button)
+    }
+
+    fn click(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        if self.is_button_held(button) {
             return Err(PointerError::ButtonAlreadyHeld { button });
+        }
+        if let Some(result) = self.helper_request(Message::Click { button }) {
+            return result;
+        }
+        self.direct.click(button)
+    }
+
+    fn double_click(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        if self.is_button_held(button) {
+            return Err(PointerError::ButtonAlreadyHeld { button });
+        }
+        if let Some(result) = self.helper_request(Message::DoubleClick { button }) {
+            return result;
+        }
+        self.direct.double_click(button)
+    }
+
+    fn release_all(&mut self) -> Result<(), Self::Error> {
+        let helper_result = if self.helper.is_some() {
+            self.helper_request(Message::ReleaseAll).transpose()
+        } else {
+            Ok(None)
+        };
+
+        let direct_result = self.direct.release_all();
+        if helper_result.is_ok() {
+            self.helper_pressed.clear();
+        }
+        set_mouse_hold_active(false);
+
+        direct_result?;
+        if let Err(error) = helper_result {
+            return Err(error);
         }
         Ok(())
     }
@@ -144,6 +359,9 @@ impl WindowsPointer {
 impl Drop for WindowsPointer {
     fn drop(&mut self) {
         let _ = self.release_all();
+        if let Some(mut helper) = self.helper.take() {
+            let _ = helper.shutdown();
+        }
     }
 }
 
