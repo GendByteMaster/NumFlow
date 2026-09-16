@@ -1,9 +1,9 @@
 # NumFlow Linux Input Backend Design
 
-Status: Approved for planning
+Status: Draft — architecture approved; awaiting written spec review
 Branch: `feat/linux-input-backend`
 Base: `dev/master`
-Risk: Medium
+Risk: High
 
 ## Goal
 
@@ -37,7 +37,7 @@ Portal/libei support may be added later as an optional backend without changing 
 
 Wayland does not provide a universal application-level global key interception API with the exact semantics NumFlow needs. Global shortcut portals register actions but do not provide a general raw physical-key interception and suppression path. NumFlow must be able to consume NumPad input while Num Lock is Off and restore ordinary numeric input while Num Lock is On.
 
-Linux `evdev` exposes physical input event devices under `/dev/input`, and `uinput` allows a userspace process to create virtual keyboard and mouse devices. This gives NumFlow one compositor-independent path that works below both Wayland and X11.
+Linux `evdev` exposes physical input event devices under `/dev/input`, and `uinput` allows a userspace process to create virtual keyboard and mouse devices. This gives NumFlow one compositor-independent path below both Wayland and X11.
 
 The implementation should use the Rust `evdev` crate rather than custom unsafe ioctl bindings. The repository root denies unsafe code, and the Linux platform crate should also deny unsafe code.
 
@@ -102,7 +102,7 @@ src/platform_input/linux.rs
 
 ## Startup order and fail-closed behavior
 
-Exclusive keyboard capture is the highest-risk part of this backend. NumFlow must never grab a physical keyboard until it can prove that normal input can be replayed.
+Exclusive keyboard capture is the highest-risk runtime action. NumFlow must never grab a physical keyboard until normal input can be replayed.
 
 Startup order:
 
@@ -124,7 +124,7 @@ If a failure occurs after a grab:
 2. release every virtual mouse button that NumFlow believes is held;
 3. ungrab all physical keyboard devices;
 4. destroy/drop virtual devices;
-5. surface the failure to the application/runtime diagnostics.
+5. surface the failure to application/runtime diagnostics.
 
 No retry path may leave a keyboard grabbed while the replay device is unavailable.
 
@@ -132,24 +132,19 @@ No retry path may leave a keyboard grabbed while the replay device is unavailabl
 
 The backend enumerates `/dev/input/event*` and identifies physical keyboard candidates from advertised capabilities rather than device-name matching alone.
 
-A candidate must advertise:
+A candidate must advertise `EV_KEY`, `KEY_NUMLOCK`, and the NumPad keys required by NumFlow. The replay keyboard is built from the union of supported keyboard capabilities required to preserve events from all captured devices.
 
-- `EV_KEY`;
-- `KEY_NUMLOCK`;
-- the NumPad keys required by NumFlow;
-- ordinary keyboard keys needed for safe replay.
+The backend must exclude NumFlow-created virtual devices using stable NumFlow virtual-device identifiers and sysfs/uinput metadata so replayed events cannot recursively re-enter capture.
 
-The backend must exclude NumFlow-created virtual devices using stable NumFlow virtual-device identifiers and sysfs/uinput metadata so that replayed events cannot recursively re-enter capture.
+If multiple eligible physical keyboards are present, the backend may capture all eligible physical keyboards and multiplex them into the same replay/runtime path. Ownership and pressed-key state are tracked per physical device so disconnecting one device does not corrupt another device's state.
 
-If multiple eligible physical keyboards are present, the backend may capture all eligible physical keyboards and multiplex them into the same replay/runtime path. Ownership is tracked per physical device so disconnecting one device does not corrupt another device's key state.
-
-The first implementation does not require permanent high-frequency device enumeration. Device-loss recovery triggers a bounded rescan with backoff. Successful steady-state operation remains event-driven.
+The first implementation does not require permanent high-frequency enumeration. Device-loss recovery triggers a bounded rescan with backoff. Successful steady-state operation remains event-driven.
 
 ## Keyboard replay
 
 Because `EVIOCGRAB` is device-wide, NumFlow must replay ordinary keyboard events that it does not consume.
 
-The virtual replay keyboard must expose the capabilities required by the captured physical keyboard set. Events are processed in original packet order, preserving `SYN_REPORT` boundaries where relevant.
+The virtual replay keyboard exposes the capability union required by captured physical keyboards. Events are processed in original packet order and preserve synchronization boundaries where relevant.
 
 Rules:
 
@@ -158,9 +153,22 @@ Rules:
 - when Num Lock is Off, configured NumFlow NumPad bindings are consumed instead of replayed;
 - unrelated events from the same physical keyboard must not be silently discarded;
 - generated events from NumFlow virtual devices must never be recaptured;
-- key-up events must always be reconciled so a state transition cannot leave a virtual key logically held.
+- key-up events must always be reconciled so a transition cannot leave a virtual key logically held.
 
-The replay layer is not a general remapper. Its only purpose is to preserve the events hidden from the desktop by the exclusive grab.
+The replay layer is not a general remapper. Its only purpose is to preserve events hidden from the desktop by the exclusive grab.
+
+## Privacy boundary
+
+The backend necessarily observes events from captured keyboard devices in memory so that it can replay non-NumPad input after `EVIOCGRAB`.
+
+NumFlow must therefore enforce these privacy constraints:
+
+- never persist ordinary key events;
+- never send ordinary key events over the network;
+- never include ordinary key contents in telemetry, diagnostics, crash reports, or normal logs;
+- do not expose a general-purpose key history API;
+- retain only the minimum transient pressed-state needed for correct replay and recovery;
+- diagnostics may identify the device and failure type, but not the text or key sequence typed by the user.
 
 ## Num Lock semantics
 
@@ -171,9 +179,9 @@ Num Lock remains the authoritative mode switch, matching the Windows product beh
 
 The physical Num Lock key itself is replayed so the desktop/kernel retains normal lock-state ownership.
 
-The backend tracks Num Lock state from Linux input state and lock events rather than inventing an independent toggle state. On startup and after recovery it re-reads the current LED/key state from the physical device where available.
+The backend tracks Num Lock state from Linux input state and lock events rather than inventing an independent toggle state. On startup and after recovery it re-reads current LED/key state from the physical device where available.
 
-The virtual replay keyboard must expose Num Lock LED capability. LED feedback received for the virtual keyboard is mirrored to captured physical keyboards that support `LED_NUML` by sending output LED events through evdev. Failure to mirror an LED is diagnostic and must not cause a stuck exclusive grab; logical Num Lock operation takes precedence over LED cosmetics.
+The virtual replay keyboard exposes Num Lock LED capability. LED feedback received for the virtual keyboard is mirrored to captured physical keyboards that support `LED_NUML` by sending output LED events through evdev. Failure to mirror an LED is diagnostic and must not cause a stuck exclusive grab; logical Num Lock operation takes precedence over LED cosmetics.
 
 Auto-repeat of `KEY_NUMLOCK` must not cause multiple logical transitions from one physical press.
 
@@ -237,16 +245,20 @@ Suspend/resume validation is required. If an input descriptor becomes invalid af
 
 ## Permissions
 
-NumFlow must not require the entire GUI application to run as root.
+Risk is High because this backend requires permission to read and exclusively grab physical keyboard event devices.
 
-The production permission model should grant the logged-in user narrowly scoped access to:
+NumFlow must not require the GUI application to run as root and must not modify live permissions by itself.
 
-- the keyboard event devices NumFlow needs to read/grab;
+The production permission model should grant the logged-in interactive user narrowly scoped access to:
+
+- keyboard event devices NumFlow needs to read/grab;
 - `/dev/uinput` for virtual-device creation.
 
-The first implementation may provide an installation-time udev rule or equivalent documented group-based setup. The exact packaging mechanism must be explicit and auditable; it must not use world-writable (`0666`) access to all input devices.
+The preferred first implementation is a documented installation-time udev/uaccess policy, or an equivalent distribution-supported mechanism. It must not use world-writable (`0666`) permissions for input devices and must not make all `/dev/input/event*` nodes broadly writable.
 
-Permission diagnostics must identify which capability is missing:
+Installing or activating a udev permission policy is a consequential High-risk system change and requires an explicit user/admin action. Repository implementation may prepare the rule and documentation, but NumFlow must not silently install it at runtime.
+
+Permission diagnostics must distinguish:
 
 - cannot read physical input device;
 - cannot grab physical keyboard;
@@ -280,13 +292,20 @@ At minimum diagnostics include:
 - last device/replay/pointer I/O failure;
 - recovery state and retry reason.
 
-Do not log every input event in normal operation.
+Ordinary key contents must never be logged.
 
 ## Security and safety
 
-Risk level: Medium.
+Risk level: High.
 
-Blast radius of an implementation defect is the local interactive input session. The primary hazard is temporarily hiding a physical keyboard from the desktop after an exclusive grab.
+Why High: implementation requires permission changes around protected input device nodes and observes system-wide keyboard events for replay while a device is exclusively grabbed.
+
+Blast radius:
+
+- local interactive input session;
+- captured physical keyboards;
+- local privacy if ordinary key events were accidentally logged or persisted;
+- desktop pointer behavior through the NumFlow virtual mouse.
 
 Mandatory controls:
 
@@ -295,12 +314,20 @@ Mandatory controls:
 - keep ownership in RAII types whose drop path attempts ungrab/release;
 - release virtual mouse buttons before backend teardown;
 - exclude NumFlow virtual devices from discovery;
+- never persist or transmit ordinary keyboard events;
 - do not execute shell commands or expose privileged IPC;
 - no setuid NumFlow executable;
 - no world-writable input-device permissions;
 - keep Linux platform code isolated from `numflow-core`.
 
-Recovery strategy: on any fatal backend error, fail open for the user's physical keyboard by ungrabbing it, even if that means disabling NumFlow pointer control.
+Recovery strategy: on any fatal backend error, fail open for the user's physical keyboard by ungrabbing it, even if that disables NumFlow pointer control.
+
+Rollback strategy:
+
+- application rollback: disable/remove the Linux backend and run without physical grabs;
+- runtime rollback: terminate NumFlow; kernel file-descriptor teardown releases `EVIOCGRAB` ownership;
+- permission rollback: remove the NumFlow-specific udev/uaccess rule through an explicit admin action and reload rules/reconnect devices;
+- no persistent keyboard remapping state is written by NumFlow.
 
 ## Testing
 
@@ -316,7 +343,8 @@ Add deterministic tests for:
 - multi-device ownership/state bookkeeping;
 - button fail-safe release decisions;
 - reconnect/backoff state transitions;
-- permission/error classification.
+- permission/error classification;
+- privacy-safe diagnostic formatting.
 
 Tests must not require `/dev/input` or `/dev/uinput` for pure routing logic.
 
@@ -341,9 +369,10 @@ On Omarchy/Hyprland Wayland, validate:
 11. rapid Num Lock transitions and key autorepeat.
 12. unplug/replug keyboard.
 13. sleep/resume.
-14. application crash/forced termination leaves the keyboard usable.
-15. permission removal/startup failure does not grab the keyboard.
+14. normal shutdown and forced termination leave the keyboard usable.
+15. permission/startup failure does not grab the keyboard.
 16. physical Num Lock LED remains synchronized when supported.
+17. ordinary typing is not logged or persisted.
 
 Repeat the core movement/click/Num Lock matrix on an X11 session when available.
 
@@ -360,7 +389,7 @@ cargo test --locked --workspace --all-features
 cargo build --locked --workspace --release --all-features
 ```
 
-The Linux job does not claim physical input integration success unless the runner actually exposes the required devices/permissions.
+The Linux job does not claim physical input integration success unless the runner actually exposes required devices and permissions.
 
 ## Documentation
 
@@ -385,12 +414,14 @@ The implementation is ready for review when all of the following are true:
 4. Num Lock On preserves ordinary keyboard/NumPad input.
 5. Num Lock Off consumes configured NumPad controls and drives existing `numflow-core` pointer semantics.
 6. Non-consumed keyboard events are replayed without recursive capture.
-7. Pointer failures, shutdown, disable, device loss, and backend teardown release held mouse buttons.
-8. Fatal capture/replay failures ungrab physical keyboards.
-9. Linux permission errors are explicit and do not require running the GUI as root.
-10. Windows behavior and Windows quality gates remain unchanged/green.
-11. Linux format, Clippy, tests, and release build are green.
-12. The Omarchy/Hyprland manual matrix is completed before the Linux backend is described as production-ready.
+7. Ordinary key events are neither persisted nor included in diagnostics/telemetry.
+8. Pointer failures, shutdown, disable, device loss, and backend teardown release held mouse buttons.
+9. Fatal capture/replay failures ungrab physical keyboards.
+10. Linux permission errors are explicit and do not require running the GUI as root.
+11. Permission rules are prepared/documented but are not silently installed by the application.
+12. Windows behavior and Windows quality gates remain unchanged/green.
+13. Linux format, Clippy, tests, and release build are green.
+14. The Omarchy/Hyprland manual matrix is completed before the Linux backend is described as production-ready.
 
 ## Deferred work
 
