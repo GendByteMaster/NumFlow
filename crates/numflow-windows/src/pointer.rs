@@ -222,19 +222,20 @@ impl WindowsPointer {
         self.last_helper_attempt = Some(now);
 
         match connect_or_spawn_helper() {
-            Ok(mut helper) if helper.ui_access() => {
-                eprintln!(
-                    "NumFlow: UIAccess input helper connected (pid={})",
-                    helper.server_pid()
-                );
-                self.helper = Some(helper);
-            }
             Ok(mut helper) => {
-                eprintln!(
-                    "NumFlow: input helper started without UIAccess; using direct SendInput fallback"
-                );
-                let _ = helper.shutdown();
-                self.helper_disabled = true;
+                if helper.ui_access() {
+                    eprintln!(
+                        "NumFlow: UIAccess input helper connected (pid={})",
+                        helper.server_pid()
+                    );
+                    self.helper = Some(helper);
+                } else {
+                    eprintln!(
+                        "NumFlow: input helper started without UIAccess; using direct SendInput fallback"
+                    );
+                    let _ = helper.shutdown();
+                    self.helper_disabled = true;
+                }
             }
             Err(InputServiceError::HelperMissing) => {
                 self.helper_disabled = true;
