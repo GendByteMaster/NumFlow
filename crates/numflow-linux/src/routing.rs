@@ -28,6 +28,16 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_keys_replay_while_numflow_is_active() {
+        let mut router = NumLockRouter::new(false);
+
+        assert_eq!(
+            router.route(LinuxKeyCode::Other(30), LinuxKeyState::Pressed),
+            RoutingDecision::Replay
+        );
+    }
+
+    #[test]
     fn num_lock_press_replays_and_emits_one_transition_until_release() {
         let mut router = NumLockRouter::new(true);
 
