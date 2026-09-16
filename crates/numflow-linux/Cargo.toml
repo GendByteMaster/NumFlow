@@ -1,0 +1,20 @@
+[package]
+name = "numflow-linux"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Linux input backends for NumFlow"
+license = "MIT"
+repository = "https://github.com/GendByteMaster/NumFlow"
+
+[dependencies]
+evdev = "0.13.2"
+numflow-core = { path = "../numflow-core" }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

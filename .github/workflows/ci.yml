@@ -56,3 +56,30 @@ jobs:
 
       - name: Release build
         run: cargo build --locked --workspace --release --all-features
+
+  linux-bootstrap:
+    name: Linux backend bootstrap
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Backend formatting
+        run: cargo fmt --manifest-path crates/numflow-linux/Cargo.toml -- --check
+
+      - name: Backend tests
+        run: cargo test --manifest-path crates/numflow-linux/Cargo.toml
+
+      - name: Backend Clippy
+        run: cargo clippy --manifest-path crates/numflow-linux/Cargo.toml --all-targets --all-features -- -D warnings

@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/numflow-core", "crates/numflow-secure", "crates/numflow-windows"]
+exclude = ["crates/numflow-linux"]
 resolver = "3"
 
 [package]
