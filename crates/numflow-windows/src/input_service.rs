@@ -310,8 +310,10 @@ mod windows_impl {
             loop {
                 let error = match Self::connect_once() {
                     Ok(client) => return Ok(client),
-                    Err(error @ (InputServiceError::PeerVerification(_)
-                    | InputServiceError::Protocol(_))) => return Err(error),
+                    Err(
+                        error @ (InputServiceError::PeerVerification(_)
+                        | InputServiceError::Protocol(_)),
+                    ) => return Err(error),
                     Err(error) => error,
                 };
 
@@ -528,18 +530,11 @@ mod windows_impl {
                 Message::Click { button } => {
                     (ack_for_pointer_result(&pointer.click(button)), false)
                 }
-                Message::DoubleClick { button } => (
-                    ack_for_pointer_result(&pointer.double_click(button)),
-                    false,
-                ),
-                Message::ReleaseAll => (
-                    ack_for_pointer_result(&pointer.release_all()),
-                    false,
-                ),
-                Message::Shutdown => (
-                    ack_for_pointer_result(&pointer.release_all()),
-                    true,
-                ),
+                Message::DoubleClick { button } => {
+                    (ack_for_pointer_result(&pointer.double_click(button)), false)
+                }
+                Message::ReleaseAll => (ack_for_pointer_result(&pointer.release_all()), false),
+                Message::Shutdown => (ack_for_pointer_result(&pointer.release_all()), true),
                 Message::Handshake { .. }
                 | Message::HandshakeAccepted { .. }
                 | Message::Ack { .. } => (
