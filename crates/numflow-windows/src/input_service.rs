@@ -63,7 +63,9 @@ pub fn peer_path_pinned(
 
     let peer_path = PathBuf::from(peer);
     let own_directory = own.parent().map_or(String::new(), normalize_path_text);
-    let peer_directory = peer_path.parent().map_or(String::new(), normalize_path_text);
+    let peer_directory = peer_path
+        .parent()
+        .map_or(String::new(), normalize_path_text);
     let peer_file = peer_path
         .file_name()
         .map_or(String::new(), |name| name.to_string_lossy().to_lowercase());
@@ -89,9 +91,9 @@ fn normalize_path_text(path: &Path) -> String {
 }
 
 #[cfg(windows)]
-pub(crate) use windows_impl::{HelperClient, connect_or_spawn_helper};
-#[cfg(windows)]
 pub use windows_impl::run_input_helper;
+#[cfg(windows)]
+pub(crate) use windows_impl::{HelperClient, connect_or_spawn_helper};
 
 #[cfg(windows)]
 mod windows_impl {
@@ -106,9 +108,7 @@ mod windows_impl {
     use numflow_core::PointerBackend;
     use windows::{
         Win32::{
-            Foundation::{
-                CloseHandle, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
-            },
+            Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE},
             Storage::FileSystem::{
                 CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES,
                 FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
@@ -116,8 +116,8 @@ mod windows_impl {
             System::{
                 Pipes::{
                     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
-                    GetNamedPipeClientProcessId, GetNamedPipeServerProcessId, PIPE_REJECT_REMOTE_CLIENTS,
-                    PIPE_TYPE_BYTE, PIPE_WAIT,
+                    GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
+                    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
                 },
                 RemoteDesktop::ProcessIdToSessionId,
                 Threading::{
@@ -132,7 +132,7 @@ mod windows_impl {
     use crate::{
         diagnostics::current_process_ui_access,
         input_protocol::{
-            ButtonAction, FrameDecoder, Message, RejectReason, HEADER_LEN, MAX_PAYLOAD_LEN,
+            ButtonAction, FrameDecoder, HEADER_LEN, MAX_PAYLOAD_LEN, Message, RejectReason,
         },
         pointer::DirectWindowsPointer,
     };
@@ -247,10 +247,7 @@ mod windows_impl {
         Ok(OwnedHandle(handle))
     }
 
-    fn read_frame(
-        pipe: HANDLE,
-        decoder: &mut FrameDecoder,
-    ) -> Result<Message, InputServiceError> {
+    fn read_frame(pipe: HANDLE, decoder: &mut FrameDecoder) -> Result<Message, InputServiceError> {
         let mut chunk = [0_u8; HEADER_LEN + MAX_PAYLOAD_LEN];
         loop {
             if let Some(message) = decoder.next_frame()? {
@@ -259,15 +256,8 @@ mod windows_impl {
 
             let mut bytes_read = 0_u32;
             // SAFETY: the handle is a connected synchronous pipe and the output buffer is valid.
-            unsafe {
-                ReadFile(
-                    pipe,
-                    Some(&mut chunk),
-                    Some(&raw mut bytes_read),
-                    None,
-                )
-            }
-            .map_err(|error| InputServiceError::Io(error.to_string()))?;
+            unsafe { ReadFile(pipe, Some(&mut chunk), Some(&raw mut bytes_read), None) }
+                .map_err(|error| InputServiceError::Io(error.to_string()))?;
             let bytes_read = usize::try_from(bytes_read).unwrap_or(0);
             if bytes_read == 0 {
                 return Err(InputServiceError::Io(
@@ -282,15 +272,8 @@ mod windows_impl {
         let frame = message.encode();
         let mut bytes_written = 0_u32;
         // SAFETY: the handle is a connected synchronous pipe and the frame remains alive.
-        unsafe {
-            WriteFile(
-                pipe,
-                Some(&frame),
-                Some(&raw mut bytes_written),
-                None,
-            )
-        }
-        .map_err(|error| InputServiceError::Io(error.to_string()))?;
+        unsafe { WriteFile(pipe, Some(&frame), Some(&raw mut bytes_written), None) }
+            .map_err(|error| InputServiceError::Io(error.to_string()))?;
 
         if usize::try_from(bytes_written).unwrap_or(0) != frame.len() {
             return Err(InputServiceError::Io(format!(
@@ -531,18 +514,12 @@ mod windows_impl {
                     };
                     (ack_for_pointer_result(result), false)
                 }
-                Message::Click { button } => {
-                    (ack_for_pointer_result(pointer.click(button)), false)
-                }
+                Message::Click { button } => (ack_for_pointer_result(pointer.click(button)), false),
                 Message::DoubleClick { button } => {
                     (ack_for_pointer_result(pointer.double_click(button)), false)
                 }
-                Message::ReleaseAll => {
-                    (ack_for_pointer_result(pointer.release_all()), false)
-                }
-                Message::Shutdown => {
-                    (ack_for_pointer_result(pointer.release_all()), true)
-                }
+                Message::ReleaseAll => (ack_for_pointer_result(pointer.release_all()), false),
+                Message::Shutdown => (ack_for_pointer_result(pointer.release_all()), true),
                 Message::Handshake { .. }
                 | Message::HandshakeAccepted { .. }
                 | Message::Ack { .. } => (
