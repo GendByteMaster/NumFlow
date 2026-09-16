@@ -8,6 +8,7 @@ mod pointer;
 mod replay;
 mod routing;
 
+pub use capture::CapturedKeyboard;
 pub use devices::{
     DeviceIdentity, KeyboardCandidate, POINTER_DEVICE_NAME, REPLAY_DEVICE_NAME,
     VIRTUAL_DEVICE_PREFIX, discover_keyboards, union_supported_keys,
