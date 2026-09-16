@@ -73,6 +73,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force dist | Out-Null
           $exe = (Resolve-Path "target/release/numflow.exe").Path
+          $inputExe = (Resolve-Path "target/release/numflow-input.exe").Path
           $secureExe = (Resolve-Path "target/release/numflow-secure.exe").Path
           $msi = "dist/NumFlow-$env:NUMFLOW_VERSION-x64.msi"
 
@@ -80,6 +81,7 @@ jobs:
             -arch x64 `
             -d "ProductVersion=$env:NUMFLOW_VERSION" `
             -d "NumFlowExe=$exe" `
+            -d "NumFlowInputExe=$inputExe" `
             -d "NumFlowSecureExe=$secureExe" `
             -pdbtype none `
             -out $msi
@@ -88,6 +90,9 @@ jobs:
             throw "MSI was not produced"
           }
 
+          # Portable builds intentionally omit numflow-input.exe. Windows only grants UIAccess to
+          # correctly signed binaries installed in a protected location, so portable packages must
+          # not advertise or silently attempt the elevated-window path.
           $portable = "dist/NumFlow-$env:NUMFLOW_VERSION-portable"
           New-Item -ItemType Directory -Force $portable | Out-Null
           Copy-Item $exe "$portable/NumFlow.exe"
@@ -114,6 +119,7 @@ jobs:
           }
           $msiSource = Get-Content $decompiled -Raw
           foreach ($expected in @(
+            "numflow-input.exe",
             "numflow-secure.exe",
             "GendByteMaster_NumFlow_v1",
             "GendByteMaster_NumFlowSecure_v1",
@@ -121,7 +127,7 @@ jobs:
             "CopySettingsToLockedDesktop"
           )) {
             if (-not $msiSource.Contains($expected)) {
-              throw "MSI accessibility registration is missing $expected"
+              throw "MSI accessibility packaging is missing $expected"
             }
           }
 
@@ -131,6 +137,9 @@ jobs:
             if (-not (Test-Path (Join-Path $verify $required))) {
               throw "Portable package missing $required"
             }
+          }
+          if (Test-Path (Join-Path $verify "numflow-input.exe")) {
+            throw "Portable package must not contain the UIAccess helper"
           }
 
           Remove-Item -Recurse -Force $verify
