@@ -15,6 +15,4 @@ pub use events::{LinuxInputEvent, LinuxKeyCode, LinuxKeyState, map_numpad_key};
 pub use permissions::LinuxInputError;
 pub use pointer::LinuxPointer;
 pub use replay::ReplayKeyboard;
-pub use routing::{
-    NumLockRouter, ProcessedBatch, RoutingDecision, process_event_batch,
-};
+pub use routing::{NumLockRouter, ProcessedBatch, RoutingDecision, process_event_batch};
