@@ -1,3 +1,91 @@
+use std::path::PathBuf;
+
+use evdev::{Device, InputEvent};
+
+use crate::{KeyboardCandidate, LinuxInputError};
+
+pub struct CapturedKeyboard {
+    device: Device,
+    path: PathBuf,
+    grabbed: bool,
+}
+
+impl CapturedKeyboard {
+    /// Opens and exclusively grabs one physical keyboard candidate.
+    ///
+    /// Replay and pointer output devices must already exist before this method is called so that a
+    /// later runtime can fail open without leaving the physical keyboard captured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxInputError::InputRead`] when the input device cannot be opened and
+    /// [`LinuxInputError::InputGrab`] when exclusive capture cannot be acquired.
+    pub fn grab(candidate: KeyboardCandidate) -> Result<Self, LinuxInputError> {
+        let path = candidate.identity.path;
+        let mut device = Device::open(&path).map_err(|source| LinuxInputError::InputRead {
+            path: path.clone(),
+            source,
+        })?;
+
+        device
+            .grab()
+            .map_err(|source| LinuxInputError::InputGrab {
+                path: path.clone(),
+                source,
+            })?;
+
+        Ok(Self {
+            device,
+            path,
+            grabbed: true,
+        })
+    }
+
+    /// Reads the next available input packet from the captured device without logging its content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxInputError::InputRead`] when evdev cannot fetch the next packet.
+    pub fn fetch_events(&mut self) -> Result<Vec<InputEvent>, LinuxInputError> {
+        self.device
+            .fetch_events()
+            .map(|events| events.collect())
+            .map_err(|source| LinuxInputError::InputRead {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Releases exclusive ownership. Calling this more than once is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxInputError::InputUngrab`] when evdev cannot release the grab.
+    pub fn ungrab(&mut self) -> Result<(), LinuxInputError> {
+        if !self.grabbed {
+            return Ok(());
+        }
+
+        self.device
+            .ungrab()
+            .map_err(|source| LinuxInputError::InputUngrab {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.grabbed = false;
+        Ok(())
+    }
+}
+
+impl Drop for CapturedKeyboard {
+    fn drop(&mut self) {
+        if self.grabbed {
+            let _ = self.device.ungrab();
+            self.grabbed = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
