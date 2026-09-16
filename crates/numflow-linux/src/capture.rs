@@ -47,7 +47,7 @@ impl CapturedKeyboard {
     pub fn fetch_events(&mut self) -> Result<Vec<InputEvent>, LinuxInputError> {
         self.device
             .fetch_events()
-            .map(|events| events.collect())
+            .map(std::iter::Iterator::collect)
             .map_err(|source| LinuxInputError::InputRead {
                 path: self.path.clone(),
                 source,
