@@ -5,8 +5,8 @@ mod tests {
     use evdev::{AttributeSet, KeyCode};
 
     use super::{
-        DeviceIdentity, KeyboardCandidate, is_keyboard_candidate, union_supported_keys,
-        VIRTUAL_DEVICE_PREFIX,
+        DeviceIdentity, KeyboardCandidate, VIRTUAL_DEVICE_PREFIX, is_keyboard_candidate,
+        union_supported_keys,
     };
 
     fn required_keys() -> AttributeSet<KeyCode> {
