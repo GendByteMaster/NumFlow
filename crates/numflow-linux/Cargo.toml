@@ -8,6 +8,7 @@ license = "MIT"
 repository = "https://github.com/GendByteMaster/NumFlow"
 
 [dependencies]
+evdev = "0.13.2"
 numflow-core = { path = "../numflow-core" }
 thiserror = "2"
 
