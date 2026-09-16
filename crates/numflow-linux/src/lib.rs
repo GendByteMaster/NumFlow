@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+mod capture;
 mod devices;
 mod events;
 mod permissions;
