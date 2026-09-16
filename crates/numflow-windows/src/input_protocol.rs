@@ -391,10 +391,9 @@ fn decode_payload(message_id: u16, payload: &[u8]) -> Result<Message, ProtocolEr
         }
         10 => {
             let accepted = parse_flag(*payload.first().ok_or(ProtocolError::InvalidPayload)?)?;
-            let detail = RejectReason::from_code(
-                *payload.get(1).ok_or(ProtocolError::InvalidPayload)?,
-            )
-            .ok_or(ProtocolError::InvalidPayload)?;
+            let detail =
+                RejectReason::from_code(*payload.get(1).ok_or(ProtocolError::InvalidPayload)?)
+                    .ok_or(ProtocolError::InvalidPayload)?;
             if accepted != (detail == RejectReason::None) {
                 return Err(ProtocolError::InvalidPayload);
             }
