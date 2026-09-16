@@ -1,4 +1,4 @@
-//! Typed, whitelisted wire protocol between NumFlow and the `numflow-input` helper.
+//! Typed, whitelisted wire protocol between `NumFlow` and the `numflow-input` helper.
 //!
 //! The protocol is intentionally tiny: a fixed little-endian header followed by a bounded payload.
 //! Only the message kinds in [`Message`] exist, and decoding rejects anything else, so the helper
@@ -107,11 +107,11 @@ pub enum Message {
         /// Process id of the connecting application, cross-checked against the pipe peer.
         client_pid: u32,
     },
-    /// Helper → application: ownership accepted; reports the helper's actual UIAccess state.
+    /// Helper → application: ownership accepted; reports the helper's actual `UIAccess` state.
     HandshakeAccepted {
         /// Process id of the helper, cross-checked against the pipe peer.
         server_pid: u32,
-        /// Whether the helper process token actually carries the UIAccess flag.
+        /// Whether the helper process token actually carries the `UIAccess` flag.
         ui_access: bool,
     },
     /// Application → helper: liveness probe.
@@ -201,11 +201,10 @@ impl Message {
         match self {
             Self::Handshake { .. } | Self::Ping { .. } => 4,
             Self::PointerMove { .. } => 8,
-            Self::PointerButton { .. } => 2,
+            Self::PointerButton { .. } | Self::Ack { .. } => 2,
             Self::Click { .. } | Self::DoubleClick { .. } => 1,
             Self::HandshakeAccepted { .. } => 6,
             Self::ReleaseAll | Self::Shutdown => 0,
-            Self::Ack { .. } => 2,
         }
     }
 
@@ -338,14 +337,12 @@ impl FrameDecoder {
 
 const fn expected_payload_len(message_id: u16) -> Option<usize> {
     match message_id {
-        1 => Some(4),
-        2 => Some(4),
+        1 | 2 => Some(4),
         3 => Some(8),
-        4 => Some(2),
+        4 | 10 => Some(2),
         5 | 6 => Some(1),
         7 | 8 => Some(0),
         9 => Some(6),
-        10 => Some(2),
         _ => None,
     }
 }
