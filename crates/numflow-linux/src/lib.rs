@@ -2,6 +2,8 @@
 
 mod devices;
 mod events;
+mod pointer;
+mod replay;
 mod routing;
 
 pub use devices::{
