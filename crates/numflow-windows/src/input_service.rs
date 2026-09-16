@@ -35,9 +35,9 @@ pub enum InputServiceError {
     Spawn(String),
     #[error("numflow-input helper pipe I/O failed: {0}")]
     Io(String),
-    #[error("numflow-input helper protocol violation: {0:?}")]
+    #[error("numflow-input helper protocol violation: {0}")]
     Protocol(#[from] ProtocolError),
-    #[error("the numflow-input helper rejected the request: {}", .0.code())]
+    #[error("the numflow-input helper rejected the request: {0}")]
     Rejected(#[from] RejectReason),
 }
 
@@ -146,6 +146,7 @@ mod windows_impl {
     const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(2);
     const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(40);
     const PIPE_BUFFER_SIZE: u32 = 4_096;
+    const LIVENESS_NONCE: u32 = 0x4E46_4950;
 
     struct OwnedHandle(HANDLE);
 
@@ -170,10 +171,15 @@ mod windows_impl {
         }
     }
 
+    fn current_process_id() -> u32 {
+        // SAFETY: GetCurrentProcessId has no preconditions and only returns the caller's PID.
+        unsafe { GetCurrentProcessId() }
+    }
+
     fn current_session_id() -> Result<u32, InputServiceError> {
         let mut session_id = 0_u32;
-        // SAFETY: output points to a valid local `u32`.
-        unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &raw mut session_id) }
+        // SAFETY: the process id is valid for the current process and output points to a local u32.
+        unsafe { ProcessIdToSessionId(current_process_id(), &raw mut session_id) }
             .map_err(|error| InputServiceError::Io(error.to_string()))?;
         Ok(session_id)
     }
@@ -318,7 +324,7 @@ mod windows_impl {
 
         fn handshake(pipe: OwnedHandle) -> Result<Self, InputServiceError> {
             let mut peer_pid = 0_u32;
-            // SAFETY: output points to a valid local `u32` and `pipe` is a client pipe handle.
+            // SAFETY: output points to a valid local u32 and pipe is a client pipe handle.
             unsafe { GetNamedPipeServerProcessId(pipe.get(), &raw mut peer_pid) }
                 .map_err(|error| InputServiceError::Io(error.to_string()))?;
 
@@ -334,7 +340,7 @@ mod windows_impl {
             write_frame(
                 pipe.get(),
                 Message::Handshake {
-                    client_pid: GetCurrentProcessId(),
+                    client_pid: current_process_id(),
                 },
             )?;
             let response = read_frame(pipe.get(), &mut decoder)?;
@@ -360,9 +366,13 @@ mod windows_impl {
             })
         }
 
-        #[must_use]
-        pub(crate) const fn ui_access(&self) -> bool {
-            self.ui_access
+        /// Returns the helper's reported UIAccess state after a live request/response probe.
+        pub(crate) fn ui_access(&mut self) -> bool {
+            self.request(Message::Ping {
+                nonce: LIVENESS_NONCE,
+            })
+            .is_ok()
+                && self.ui_access
         }
 
         #[must_use]
@@ -422,14 +432,14 @@ mod windows_impl {
         };
         if handle.is_invalid() {
             return Err(InputServiceError::PipeCreate(
-                WindowsError::from_win32().to_string(),
+                WindowsError::from_thread().to_string(),
             ));
         }
         Ok(OwnedHandle(handle))
     }
 
     fn wait_for_client(pipe: HANDLE) -> Result<(), InputServiceError> {
-        // SAFETY: `pipe` is a server instance returned by `CreateNamedPipeW`.
+        // SAFETY: pipe is a server instance returned by CreateNamedPipeW.
         match unsafe { ConnectNamedPipe(pipe, None) } {
             Ok(()) => Ok(()),
             Err(error) if error.code() == HRESULT::from_win32(ERROR_PIPE_CONNECTED.0) => Ok(()),
@@ -439,7 +449,7 @@ mod windows_impl {
 
     fn verify_client(pipe: HANDLE) -> Result<u32, InputServiceError> {
         let mut client_pid = 0_u32;
-        // SAFETY: output points to a valid local `u32` and `pipe` is the server handle.
+        // SAFETY: output points to a valid local u32 and pipe is the server handle.
         unsafe { GetNamedPipeClientProcessId(pipe, &raw mut client_pid) }
             .map_err(|error| InputServiceError::PeerVerification(error.to_string()))?;
 
@@ -481,7 +491,7 @@ mod windows_impl {
         write_frame(
             pipe,
             Message::HandshakeAccepted {
-                server_pid: GetCurrentProcessId(),
+                server_pid: current_process_id(),
                 ui_access: current_process_ui_access().unwrap_or(false),
             },
         )?;
