@@ -27,12 +27,10 @@ impl CapturedKeyboard {
             source,
         })?;
 
-        device
-            .grab()
-            .map_err(|source| LinuxInputError::InputGrab {
-                path: path.clone(),
-                source,
-            })?;
+        device.grab().map_err(|source| LinuxInputError::InputGrab {
+            path: path.clone(),
+            source,
+        })?;
 
         Ok(Self {
             device,
