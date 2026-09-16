@@ -47,7 +47,7 @@ pub fn pipe_name_for_session(session_id: u32) -> String {
     format!(r"\\.\pipe\numflow-input-{session_id}")
 }
 
-/// Returns whether a resolved peer executable is pinned to the NumFlow installation directory.
+/// Returns whether a resolved peer executable is pinned to the `NumFlow` installation directory.
 #[must_use]
 pub fn peer_path_pinned(
     own_executable: Option<&Path>,
@@ -310,8 +310,8 @@ mod windows_impl {
             loop {
                 let error = match Self::connect_once() {
                     Ok(client) => return Ok(client),
-                    Err(error @ InputServiceError::PeerVerification(_)) => return Err(error),
-                    Err(error @ InputServiceError::Protocol(_)) => return Err(error),
+                    Err(error @ (InputServiceError::PeerVerification(_)
+                    | InputServiceError::Protocol(_))) => return Err(error),
                     Err(error) => error,
                 };
 
@@ -366,7 +366,7 @@ mod windows_impl {
             })
         }
 
-        /// Returns the helper's reported UIAccess state after a live request/response probe.
+        /// Returns the helper's reported `UIAccess` state after a live request/response probe.
         pub(crate) fn ui_access(&mut self) -> bool {
             self.request(Message::Ping {
                 nonce: LIVENESS_NONCE,
@@ -463,7 +463,7 @@ mod windows_impl {
         Ok(client_pid)
     }
 
-    fn ack_for_pointer_result(result: Result<(), crate::PointerError>) -> Message {
+    fn ack_for_pointer_result(result: &Result<(), crate::PointerError>) -> Message {
         match result {
             Ok(()) => Message::Ack {
                 accepted: true,
@@ -514,22 +514,32 @@ mod windows_impl {
                     },
                     false,
                 ),
-                Message::PointerMove { dx, dy } => {
-                    (ack_for_pointer_result(pointer.move_relative(dx, dy)), false)
-                }
+                Message::PointerMove { dx, dy } => (
+                    ack_for_pointer_result(&pointer.move_relative(dx, dy)),
+                    false,
+                ),
                 Message::PointerButton { button, action } => {
                     let result = match action {
                         ButtonAction::Down => pointer.button_down(button),
                         ButtonAction::Up => pointer.button_up(button),
                     };
-                    (ack_for_pointer_result(result), false)
+                    (ack_for_pointer_result(&result), false)
                 }
-                Message::Click { button } => (ack_for_pointer_result(pointer.click(button)), false),
-                Message::DoubleClick { button } => {
-                    (ack_for_pointer_result(pointer.double_click(button)), false)
+                Message::Click { button } => {
+                    (ack_for_pointer_result(&pointer.click(button)), false)
                 }
-                Message::ReleaseAll => (ack_for_pointer_result(pointer.release_all()), false),
-                Message::Shutdown => (ack_for_pointer_result(pointer.release_all()), true),
+                Message::DoubleClick { button } => (
+                    ack_for_pointer_result(&pointer.double_click(button)),
+                    false,
+                ),
+                Message::ReleaseAll => (
+                    ack_for_pointer_result(&pointer.release_all()),
+                    false,
+                ),
+                Message::Shutdown => (
+                    ack_for_pointer_result(&pointer.release_all()),
+                    true,
+                ),
                 Message::Handshake { .. }
                 | Message::HandshakeAccepted { .. }
                 | Message::Ack { .. } => (
@@ -551,7 +561,12 @@ mod windows_impl {
         }
     }
 
-    /// Runs the one-owner UIAccess helper service until the owner disconnects or requests shutdown.
+    /// Runs the one-owner `UIAccess` helper service until the owner disconnects or requests shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputServiceError`] when the helper cannot create or connect its pipe, verify the
+    /// owning process, decode the restricted protocol, or complete the service loop safely.
     pub fn run_input_helper() -> Result<(), InputServiceError> {
         let pipe = create_server_pipe()?;
         wait_for_client(pipe.get())?;
