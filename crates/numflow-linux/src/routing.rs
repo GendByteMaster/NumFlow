@@ -61,9 +61,25 @@ impl NumLockRouter {
 
 #[cfg(test)]
 mod tests {
+    use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
     use numflow_core::NumpadKey;
 
-    use super::{LinuxInputEvent, LinuxKeyCode, LinuxKeyState, NumLockRouter, RoutingDecision};
+    use super::{
+        LinuxInputEvent, LinuxKeyCode, LinuxKeyState, NumLockRouter, RoutingDecision,
+        process_event_batch,
+    };
+
+    fn key(code: KeyCode, value: i32) -> InputEvent {
+        InputEvent::new(EventType::KEY.0, code.0, value)
+    }
+
+    fn syn_report() -> InputEvent {
+        InputEvent::new(
+            EventType::SYNCHRONIZATION.0,
+            SynchronizationCode::SYN_REPORT.0,
+            0,
+        )
+    }
 
     #[test]
     fn num_lock_on_replays_keypad_input() {
@@ -117,6 +133,68 @@ mod tests {
         assert_eq!(
             router.route(LinuxKeyCode::NumLock, LinuxKeyState::Pressed),
             RoutingDecision::ReplayAndEmit(LinuxInputEvent::NumLockChanged { num_lock_on: true })
+        );
+    }
+
+    #[test]
+    fn batch_with_num_lock_on_replays_keys_in_original_order_without_syn_report() {
+        let mut router = NumLockRouter::new(true);
+        let events = [
+            key(KeyCode::KEY_A, 1),
+            key(KeyCode::KEY_KP8, 1),
+            syn_report(),
+        ];
+
+        let processed = process_event_batch(&events, &mut router);
+
+        assert_eq!(processed.replay, events[..2]);
+        assert!(processed.runtime.is_empty());
+    }
+
+    #[test]
+    fn batch_with_num_lock_off_consumes_only_mapped_keypad_events() {
+        let mut router = NumLockRouter::new(false);
+        let events = [
+            key(KeyCode::KEY_A, 1),
+            key(KeyCode::KEY_KP8, 1),
+            key(KeyCode::KEY_KP8, 0),
+            syn_report(),
+        ];
+
+        let processed = process_event_batch(&events, &mut router);
+
+        assert_eq!(processed.replay, vec![events[0]]);
+        assert_eq!(
+            processed.runtime,
+            vec![
+                LinuxInputEvent::Numpad {
+                    key: NumpadKey::Num8,
+                    state: LinuxKeyState::Pressed,
+                },
+                LinuxInputEvent::Numpad {
+                    key: NumpadKey::Num8,
+                    state: LinuxKeyState::Released,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_replays_num_lock_and_emits_one_transition_per_press_edge() {
+        let mut router = NumLockRouter::new(true);
+        let events = [
+            key(KeyCode::KEY_NUMLOCK, 1),
+            key(KeyCode::KEY_NUMLOCK, 2),
+            key(KeyCode::KEY_NUMLOCK, 0),
+            syn_report(),
+        ];
+
+        let processed = process_event_batch(&events, &mut router);
+
+        assert_eq!(processed.replay, events[..3]);
+        assert_eq!(
+            processed.runtime,
+            vec![LinuxInputEvent::NumLockChanged { num_lock_on: false }]
         );
     }
 }
