@@ -43,9 +43,7 @@ mod tests {
 
         assert_eq!(
             router.route(LinuxKeyCode::NumLock, LinuxKeyState::Pressed),
-            RoutingDecision::ReplayAndEmit(LinuxInputEvent::NumLockChanged {
-                num_lock_on: false,
-            })
+            RoutingDecision::ReplayAndEmit(LinuxInputEvent::NumLockChanged { num_lock_on: false })
         );
         assert_eq!(
             router.route(LinuxKeyCode::NumLock, LinuxKeyState::Repeated),
@@ -57,9 +55,7 @@ mod tests {
         );
         assert_eq!(
             router.route(LinuxKeyCode::NumLock, LinuxKeyState::Pressed),
-            RoutingDecision::ReplayAndEmit(LinuxInputEvent::NumLockChanged {
-                num_lock_on: true,
-            })
+            RoutingDecision::ReplayAndEmit(LinuxInputEvent::NumLockChanged { num_lock_on: true })
         );
     }
 }
