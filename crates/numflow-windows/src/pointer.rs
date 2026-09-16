@@ -89,7 +89,7 @@ impl PressedButtons {
     }
 }
 
-/// Direct `SendInput` implementation used both by NumFlow fallback and inside the UIAccess helper.
+/// Direct `SendInput` implementation used both by `NumFlow` fallback and inside the `UIAccess` helper.
 #[derive(Debug, Default)]
 pub(crate) struct DirectWindowsPointer {
     pressed: PressedButtons,
@@ -173,11 +173,11 @@ impl Drop for DirectWindowsPointer {
     }
 }
 
-/// Pointer backend for the normal NumFlow runtime.
+/// Pointer backend for the normal `NumFlow` runtime.
 ///
-/// Installed production builds prefer the signed `numflow-input.exe` UIAccess helper. Development,
+/// Installed production builds prefer the signed `numflow-input.exe` `UIAccess` helper. Development,
 /// portable, elevated, and secure runtimes keep using direct `SendInput` when the helper is absent
-/// or Windows did not grant its UIAccess token.
+/// or Windows did not grant its `UIAccess` token.
 #[derive(Debug)]
 pub struct WindowsPointer {
     direct: DirectWindowsPointer,
@@ -281,16 +281,16 @@ impl PointerBackend for WindowsPointer {
             return Ok(());
         }
 
-        if self.helper_active() || (!self.helper_disabled && !self.direct.has_held_buttons()) {
-            if let Some(result) = self.helper_request(Message::PointerButton {
+        if (self.helper_active() || (!self.helper_disabled && !self.direct.has_held_buttons()))
+            && let Some(result) = self.helper_request(Message::PointerButton {
                 button,
                 action: ButtonAction::Down,
-            }) {
-                result?;
-                self.helper_pressed.insert(button);
-                set_mouse_hold_active(true);
-                return Ok(());
-            }
+            })
+        {
+            result?;
+            self.helper_pressed.insert(button);
+            set_mouse_hold_active(true);
+            return Ok(());
         }
 
         self.direct.button_down(button)
@@ -350,9 +350,7 @@ impl PointerBackend for WindowsPointer {
         set_mouse_hold_active(false);
 
         direct_result?;
-        if let Err(error) = helper_result {
-            return Err(error);
-        }
+        helper_result?;
         Ok(())
     }
 }
