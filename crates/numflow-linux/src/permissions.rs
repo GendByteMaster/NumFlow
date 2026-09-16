@@ -14,6 +14,12 @@ pub enum LinuxInputError {
         #[source]
         source: io::Error,
     },
+    #[error("cannot release exclusive Linux keyboard {path}: {source}")]
+    InputUngrab {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("cannot open /dev/uinput: {0}")]
     UinputOpen(io::Error),
     #[error("cannot create or write NumFlow virtual device: {0}")]
