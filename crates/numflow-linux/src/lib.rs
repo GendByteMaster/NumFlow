@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+mod devices;
 mod events;
 mod routing;
 
