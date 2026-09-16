@@ -21,6 +21,10 @@ mod hook;
 #[cfg(windows)]
 mod hud;
 #[cfg(windows)]
+mod input_protocol;
+#[cfg(windows)]
+mod input_service;
+#[cfg(windows)]
 mod instance;
 #[cfg(windows)]
 mod lifecycle;
@@ -59,6 +63,8 @@ pub use hook::{
 };
 #[cfg(windows)]
 pub use hud::{HudPosition, configure_hud_native_window, recommended_hud_position};
+#[cfg(windows)]
+pub use input_service::{InputServiceError, run_input_helper};
 #[cfg(windows)]
 pub use instance::{SingleInstanceError, SingleInstanceGuard};
 #[cfg(windows)]
