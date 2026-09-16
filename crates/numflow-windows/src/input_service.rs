@@ -97,7 +97,7 @@ pub use windows_impl::run_input_helper;
 mod windows_impl {
     use std::{
         os::windows::process::CommandExt,
-        path::{Path, PathBuf},
+        path::PathBuf,
         process::Command,
         thread,
         time::{Duration, Instant},
@@ -161,6 +161,12 @@ mod windows_impl {
             unsafe {
                 let _ = CloseHandle(self.0);
             }
+        }
+    }
+
+    impl std::fmt::Debug for OwnedHandle {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.debug_tuple("OwnedHandle").field(&self.0).finish()
         }
     }
 
@@ -303,12 +309,6 @@ mod windows_impl {
         ui_access: bool,
     }
 
-    impl std::fmt::Debug for OwnedHandle {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.debug_tuple("OwnedHandle").field(&self.0).finish()
-        }
-    }
-
     impl HelperClient {
         fn connect_once() -> Result<Self, InputServiceError> {
             let pipe = open_client_pipe_once()?;
@@ -317,18 +317,17 @@ mod windows_impl {
 
         fn connect_with_timeout(timeout: Duration) -> Result<Self, InputServiceError> {
             let deadline = Instant::now() + timeout;
-            let mut last_error = InputServiceError::Connect("helper pipe is unavailable".to_owned());
 
             loop {
-                match Self::connect_once() {
+                let error = match Self::connect_once() {
                     Ok(client) => return Ok(client),
                     Err(error @ InputServiceError::PeerVerification(_)) => return Err(error),
                     Err(error @ InputServiceError::Protocol(_)) => return Err(error),
-                    Err(error) => last_error = error,
-                }
+                    Err(error) => error,
+                };
 
                 if Instant::now() >= deadline {
-                    return Err(last_error);
+                    return Err(error);
                 }
                 thread::sleep(CONNECT_RETRY_INTERVAL);
             }
@@ -440,7 +439,7 @@ mod windows_impl {
         };
         if handle.is_invalid() {
             return Err(InputServiceError::PipeCreate(
-                WindowsError::from_thread().to_string(),
+                WindowsError::from_win32().to_string(),
             ));
         }
         Ok(OwnedHandle(handle))
@@ -471,9 +470,7 @@ mod windows_impl {
         Ok(client_pid)
     }
 
-    fn ack_for_pointer_result(
-        result: Result<(), crate::PointerError>,
-    ) -> Message {
+    fn ack_for_pointer_result(result: Result<(), crate::PointerError>) -> Message {
         match result {
             Ok(()) => Message::Ack {
                 accepted: true,
@@ -502,7 +499,7 @@ mod windows_impl {
             pipe,
             Message::HandshakeAccepted {
                 server_pid: GetCurrentProcessId(),
-                ui_access: current_process_ui_access(),
+                ui_access: current_process_ui_access().unwrap_or(false),
             },
         )?;
 
@@ -583,7 +580,10 @@ mod windows_impl {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, time::{Duration, Instant}};
+    use std::{
+        path::Path,
+        time::{Duration, Instant},
+    };
 
     use super::{peer_path_pinned, pipe_name_for_session, reconnect_allowed};
 
