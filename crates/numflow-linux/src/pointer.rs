@@ -56,8 +56,14 @@ mod tests {
             .expect("button up should emit");
 
         let batches = batches.borrow();
-        assert_eq!(raw(&batches[0][0]), (EventType::KEY.0, KeyCode::BTN_LEFT.0, 1));
-        assert_eq!(raw(&batches[1][0]), (EventType::KEY.0, KeyCode::BTN_LEFT.0, 0));
+        assert_eq!(
+            raw(&batches[0][0]),
+            (EventType::KEY.0, KeyCode::BTN_LEFT.0, 1)
+        );
+        assert_eq!(
+            raw(&batches[1][0]),
+            (EventType::KEY.0, KeyCode::BTN_LEFT.0, 0)
+        );
     }
 
     #[test]
