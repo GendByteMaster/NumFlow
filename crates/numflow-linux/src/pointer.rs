@@ -1,6 +1,8 @@
 use std::io;
 
-use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode, uinput::VirtualDevice};
+use evdev::{
+    AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode, uinput::VirtualDevice,
+};
 use numflow_core::{MouseButton, PointerBackend};
 
 use crate::{LinuxInputError, POINTER_DEVICE_NAME};
