@@ -25,6 +25,11 @@ All notable user-facing changes to NumFlow are tracked here.
   startup recovery.
 - Added an explicit `--elevated` UAC profile for controlling high-integrity Windows applications;
   the default tray/background profile remains non-elevated.
+- Continuous controls (pointer speed, pointer acceleration, and interface-sound volume) coalesce their
+  durable configuration write until the interaction settles instead of serializing the whole
+  configuration, flushing it to disk, and refreshing the secure-desktop registry snapshot on every
+  slider movement. The final value is still written on a clean shutdown, and discrete controls keep
+  writing immediately.
 
 ### Fixed
 

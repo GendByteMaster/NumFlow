@@ -142,8 +142,22 @@ Configuration rules:
 3. Recover invalid configuration to safe defaults.
 4. Persist with atomic replacement.
 5. Apply UI changes to the active runtime immediately where supported.
+6. Coalesce durable writes from continuous controls instead of writing per input event.
 
 Do not introduce ad-hoc settings outside the typed configuration model.
+
+Continuous controls (the pointer speed/acceleration sliders and the interface-sound volume slider)
+apply every value to the in-memory model, the background runtime, and the HUD immediately, but they
+coalesce the durable write. A Slint slider reports a change for every pointer move while it is
+dragged, so writing per change would serialize the complete configuration, flush it to disk with
+`sync_all`, and rewrite the bounded secure-desktop registry snapshot many times per drag on the UI
+thread. The deferred write instead runs once the interaction settles (400 ms) and is flushed
+unconditionally after the Slint event loop exits, so the final value is never lost on a clean
+shutdown.
+
+Discrete controls (mouse button, precision, profile, HUD/sound toggles, bindings, resets, tray
+preferences, and runtime-driven state changes) still write immediately. In particular, the `enabled`,
+`selected_button`, and `precision` fields of the secure-desktop snapshot must never be left pending.
 
 The Windows audio service is controlled through the typed configuration model: Advanced settings persist both the interface-sound enable state and the 0–100% volume, and runtime updates apply without changing the Windows system mixer.
 

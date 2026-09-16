@@ -1,15 +1,16 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
     sync::mpsc::Receiver,
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use num_traits::ToPrimitive;
 use numflow_core::{
     Bindings, ControllerState, CoreEffect, InputAction, MotionConfig, MouseButton, StateChange,
 };
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::{
     AppTray, AppWindow, MouseButtonMode,
@@ -25,6 +26,11 @@ use crate::{
 
 const DEFAULT_POINTER_SPEED: f32 = 180.0;
 const DEFAULT_POINTER_ACCELERATION: f32 = 900.0;
+/// Settle delay before a deferred durable configuration write runs.
+///
+/// Bounds how long a change made through a continuous control can stay unsaved while the
+/// interaction is still in progress.
+const CONFIG_WRITE_SETTLE_DELAY: Duration = Duration::from_millis(400);
 
 type SharedUiSettings = Rc<RefCell<UiSettings>>;
 type SharedHud = Rc<RefCell<HudController>>;
@@ -380,6 +386,72 @@ fn persist_configuration(settings: &SharedUiSettings, store: &ConfigStore) {
     sync_secure_desktop_settings(&settings.borrow());
 }
 
+/// Consumes a pending durable-write request, reporting whether a write must run now.
+///
+/// The flag is consumed so an already-armed settle timer cannot repeat a write that an explicit
+/// flush has already performed.
+fn take_pending_write(pending: &Cell<bool>) -> bool {
+    pending.replace(false)
+}
+
+/// Coalesces the durable configuration write requested by continuous controls.
+///
+/// A Slint slider reports a change for every pointer move while it is dragged, and one durable
+/// write serializes the complete configuration, flushes it to disk with `sync_all`, and refreshes
+/// the bounded secure-desktop registry snapshot. Writing once per pointer move therefore turns a
+/// single drag into a large number of file and registry operations on the UI thread.
+///
+/// In-memory settings, the background runtime, and the HUD still receive every change immediately;
+/// only the durable write is deferred. The settle timer is restarted on every change, so the write
+/// happens once the interaction settles, and [`ConfigPersistence::flush`] guarantees that the last
+/// pending change is written when `NumFlow` stops.
+///
+/// Discrete controls keep writing immediately, so a setting is never left unsaved and the enabled,
+/// selected-button, and precision fields of the secure-desktop snapshot stay current.
+struct ConfigPersistence {
+    settings: SharedUiSettings,
+    store: SharedConfigStore,
+    timer: Timer,
+    pending: Rc<Cell<bool>>,
+}
+
+impl ConfigPersistence {
+    fn new(settings: SharedUiSettings, store: SharedConfigStore) -> Rc<Self> {
+        Rc::new(Self {
+            settings,
+            store,
+            timer: Timer::default(),
+            pending: Rc::new(Cell::new(false)),
+        })
+    }
+
+    /// Defers a continuous-control change until the interaction settles.
+    fn defer(&self) {
+        self.pending.set(true);
+
+        let settings = Rc::clone(&self.settings);
+        let store = Rc::clone(&self.store);
+        let pending = Rc::clone(&self.pending);
+        self.timer.start(
+            TimerMode::SingleShot,
+            CONFIG_WRITE_SETTLE_DELAY,
+            move || {
+                if take_pending_write(&pending) {
+                    persist_configuration(&settings, &store);
+                }
+            },
+        );
+    }
+
+    /// Writes a deferred change immediately, for example while `NumFlow` is shutting down.
+    fn flush(&self) {
+        self.timer.stop();
+        if take_pending_write(&self.pending) {
+            persist_configuration(&self.settings, &self.store);
+        }
+    }
+}
+
 #[cfg(windows)]
 fn sync_secure_desktop_settings(settings: &UiSettings) {
     if !numflow_windows::assistive_technology_registered() {
@@ -518,6 +590,7 @@ fn connect_pointer_controls(
     hud: &SharedHud,
     store: &SharedConfigStore,
     runtime: &SharedRuntime,
+    persistence: &Rc<ConfigPersistence>,
 ) {
     {
         let settings = Rc::clone(settings);
@@ -574,23 +647,23 @@ fn connect_pointer_controls(
 
     {
         let settings = Rc::clone(settings);
-        let store = Rc::clone(store);
         let runtime = Rc::clone(runtime);
+        let persistence = Rc::clone(persistence);
         window.on_speed_changed(move |speed| {
             settings.borrow_mut().set_pointer_speed(speed);
             runtime_set_motion(&runtime, &settings);
-            persist_configuration(&settings, &store);
+            persistence.defer();
         });
     }
 
     {
         let settings = Rc::clone(settings);
-        let store = Rc::clone(store);
         let runtime = Rc::clone(runtime);
+        let persistence = Rc::clone(persistence);
         window.on_acceleration_changed(move |acceleration| {
             settings.borrow_mut().set_pointer_acceleration(acceleration);
             runtime_set_motion(&runtime, &settings);
-            persist_configuration(&settings, &store);
+            persistence.defer();
         });
     }
 }
@@ -654,6 +727,7 @@ fn connect_sound_preferences(
     settings: &SharedUiSettings,
     store: &SharedConfigStore,
     runtime: &SharedRuntime,
+    persistence: &Rc<ConfigPersistence>,
 ) {
     {
         let settings = Rc::clone(settings);
@@ -675,8 +749,8 @@ fn connect_sound_preferences(
 
     {
         let settings = Rc::clone(settings);
-        let store = Rc::clone(store);
         let runtime = Rc::clone(runtime);
+        let persistence = Rc::clone(persistence);
         window.on_sound_volume_changed(move |volume| {
             let volume_percent = volume.round().to_u8().unwrap_or(25).min(100);
             if settings.borrow().sound_volume() == volume_percent {
@@ -684,7 +758,7 @@ fn connect_sound_preferences(
             }
             settings.borrow_mut().set_sound_volume(volume_percent);
             runtime_set_sound_volume(&runtime, volume_percent);
-            persist_configuration(&settings, &store);
+            persistence.defer();
         });
     }
 
@@ -1041,10 +1115,11 @@ fn connect_ui(
     hud: &SharedHud,
     store: &SharedConfigStore,
     runtime: &SharedRuntime,
+    persistence: &Rc<ConfigPersistence>,
 ) {
-    connect_pointer_controls(window, tray, settings, hud, store, runtime);
+    connect_pointer_controls(window, tray, settings, hud, store, runtime, persistence);
     connect_binding_controls(window, settings, store, runtime);
-    connect_sound_preferences(window, settings, store, runtime);
+    connect_sound_preferences(window, settings, store, runtime, persistence);
     connect_preferences(window, tray, settings, hud, store, runtime);
     connect_tray(window, tray, settings, hud, store, runtime);
 }
@@ -1148,7 +1223,19 @@ pub fn run(background: bool) -> Result<(), AppError> {
         "configuration and background runtime ready"
     );
 
-    connect_ui(&window, &tray, &settings, &hud, &store, &runtime);
+    // Continuous controls coalesce their durable write, so the last pending change must survive the
+    // end of the event loop instead of being dropped while NumFlow shuts down.
+    let persistence = ConfigPersistence::new(Rc::clone(&settings), Rc::clone(&store));
+
+    connect_ui(
+        &window,
+        &tray,
+        &settings,
+        &hud,
+        &store,
+        &runtime,
+        &persistence,
+    );
     let runtime_event_bridge = start_runtime_event_bridge(
         &window,
         &tray,
@@ -1163,6 +1250,8 @@ pub fn run(background: bool) -> Result<(), AppError> {
 
     let event_loop_result =
         slint::run_event_loop().map_err(|error| AppError::Ui(error.to_string()));
+    // The event loop no longer runs the settle timer, so the last deferred change is written here.
+    persistence.flush();
     if let Err(error) = runtime.borrow_mut().shutdown() {
         tracing::error!(%error, "background runtime failed during final shutdown");
     }
@@ -1176,13 +1265,21 @@ pub fn run(background: bool) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        cell::{Cell, RefCell},
+        env, fs,
+        path::PathBuf,
+        rc::Rc,
+    };
+
     use super::{
-        DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings, sync_runtime_state,
+        ConfigPersistence, DEFAULT_POINTER_ACCELERATION, DEFAULT_POINTER_SPEED, UiSettings,
+        sync_runtime_state, take_pending_write,
     };
     use crate::runtime::RuntimeStateSnapshot;
     use crate::{
         bindings_ui::choice_index,
-        config::{AppConfig, InputActionConfig},
+        config::{AppConfig, ConfigStore, InputActionConfig},
     };
     use numflow_core::{Direction, InputAction, MotionConfig, MouseButton, NumpadKey};
 
@@ -1426,5 +1523,64 @@ mod tests {
         assert!(!settings.enabled());
         assert_eq!(settings.controller.held_button(), None);
         assert!(!effects.is_empty());
+    }
+
+    fn deferred_persistence() -> (Rc<ConfigPersistence>, PathBuf) {
+        let settings = Rc::new(RefCell::new(UiSettings::default()));
+        let path = env::temp_dir().join("numflow-app-deferred-config-write.toml");
+        let _ = fs::remove_file(&path);
+        let store = Rc::new(ConfigStore::new(path.clone()));
+
+        (
+            ConfigPersistence::new(Rc::clone(&settings), Rc::clone(&store)),
+            path,
+        )
+    }
+
+    #[test]
+    fn continuous_control_changes_are_deferred_until_they_settle() {
+        let (persistence, path) = deferred_persistence();
+
+        persistence.defer();
+
+        assert!(
+            persistence.pending.get(),
+            "a drag change must stay pending until it settles or NumFlow flushes it"
+        );
+        assert!(
+            !path.exists(),
+            "a drag change must not write the configuration before the interaction settles"
+        );
+    }
+
+    #[test]
+    fn flushing_without_a_pending_change_does_not_write_the_configuration() {
+        let (persistence, path) = deferred_persistence();
+
+        persistence.flush();
+
+        assert!(
+            !path.exists(),
+            "flushing a configuration without a pending change must not write it"
+        );
+    }
+
+    #[test]
+    fn pending_configuration_write_is_consumed_exactly_once() {
+        let pending = Cell::new(false);
+        assert!(
+            !take_pending_write(&pending),
+            "nothing pending means nothing to write"
+        );
+
+        pending.set(true);
+        assert!(
+            take_pending_write(&pending),
+            "a pending change must be written"
+        );
+        assert!(
+            !take_pending_write(&pending),
+            "a written change must not be written again by a later flush or settle timer"
+        );
     }
 }
