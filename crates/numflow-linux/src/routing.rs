@@ -1,3 +1,5 @@
+use evdev::{EventType, InputEvent, KeyCode, SynchronizationCode};
+
 use crate::events::{LinuxInputEvent, LinuxKeyCode, LinuxKeyState, map_numpad_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5,6 +7,12 @@ pub enum RoutingDecision {
     Replay,
     Consume(LinuxInputEvent),
     ReplayAndEmit(LinuxInputEvent),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessedBatch {
+    pub replay: Vec<InputEvent>,
+    pub runtime: Vec<LinuxInputEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +64,71 @@ impl NumLockRouter {
                 RoutingDecision::Replay
             }
         }
+    }
+}
+
+#[must_use]
+pub fn process_event_batch(events: &[InputEvent], router: &mut NumLockRouter) -> ProcessedBatch {
+    let mut replay = Vec::with_capacity(events.len());
+    let mut runtime = Vec::new();
+
+    for event in events {
+        if event.event_type() == EventType::SYNCHRONIZATION
+            && event.code() == SynchronizationCode::SYN_REPORT.0
+        {
+            continue;
+        }
+
+        if event.event_type() != EventType::KEY {
+            continue;
+        }
+
+        let Some(state) = linux_key_state(event.value()) else {
+            replay.push(*event);
+            continue;
+        };
+
+        match router.route(linux_key_code(event.code()), state) {
+            RoutingDecision::Replay => replay.push(*event),
+            RoutingDecision::Consume(runtime_event) => runtime.push(runtime_event),
+            RoutingDecision::ReplayAndEmit(runtime_event) => {
+                replay.push(*event);
+                runtime.push(runtime_event);
+            }
+        }
+    }
+
+    ProcessedBatch { replay, runtime }
+}
+
+const fn linux_key_state(value: i32) -> Option<LinuxKeyState> {
+    match value {
+        0 => Some(LinuxKeyState::Released),
+        1 => Some(LinuxKeyState::Pressed),
+        2 => Some(LinuxKeyState::Repeated),
+        _ => None,
+    }
+}
+
+fn linux_key_code(code: u16) -> LinuxKeyCode {
+    match code {
+        code if code == KeyCode::KEY_NUMLOCK.0 => LinuxKeyCode::NumLock,
+        code if code == KeyCode::KEY_KP0.0 => LinuxKeyCode::Kp0,
+        code if code == KeyCode::KEY_KP1.0 => LinuxKeyCode::Kp1,
+        code if code == KeyCode::KEY_KP2.0 => LinuxKeyCode::Kp2,
+        code if code == KeyCode::KEY_KP3.0 => LinuxKeyCode::Kp3,
+        code if code == KeyCode::KEY_KP4.0 => LinuxKeyCode::Kp4,
+        code if code == KeyCode::KEY_KP5.0 => LinuxKeyCode::Kp5,
+        code if code == KeyCode::KEY_KP6.0 => LinuxKeyCode::Kp6,
+        code if code == KeyCode::KEY_KP7.0 => LinuxKeyCode::Kp7,
+        code if code == KeyCode::KEY_KP8.0 => LinuxKeyCode::Kp8,
+        code if code == KeyCode::KEY_KP9.0 => LinuxKeyCode::Kp9,
+        code if code == KeyCode::KEY_KPPLUS.0 => LinuxKeyCode::KpPlus,
+        code if code == KeyCode::KEY_KPDOT.0 => LinuxKeyCode::KpDecimal,
+        code if code == KeyCode::KEY_KPSLASH.0 => LinuxKeyCode::KpDivide,
+        code if code == KeyCode::KEY_KPASTERISK.0 => LinuxKeyCode::KpMultiply,
+        code if code == KeyCode::KEY_KPMINUS.0 => LinuxKeyCode::KpSubtract,
+        code => LinuxKeyCode::Other(code),
     }
 }
 
